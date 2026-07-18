@@ -1,6 +1,8 @@
 # mahiru-ai
 
-![mahiruai](assets/avatar.png)
+<p align="center">
+  <img src="assets/avatar.png" alt="Mahiru AI" width="900">
+</p>
 
 <Живая> виртуальная девушка-компаньонка в Telegram:
 своя личность и вкусы, память, живое настроение, пишет первой. Анимешница и геймерша: говорит про
