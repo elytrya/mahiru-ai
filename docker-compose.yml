@@ -1,0 +1,27 @@
+version: "3.9"
+
+services:
+  bot:
+    build: .
+    env_file: .env
+    depends_on: [redis, postgres]
+    restart: unless-stopped
+    volumes:
+      - ./:/app
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: mahiru
+      POSTGRES_PASSWORD: mahiru
+      POSTGRES_DB: mahiru
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  pgdata: {}
