@@ -1,0 +1,5 @@
+exclude_paths:
+  - "downloads/**"
+  - "assets/**"
+  - "**/*.db"
+  - "**/__pycache__/**"

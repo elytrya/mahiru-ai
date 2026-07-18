@@ -1,8 +1,14 @@
 # mahiru-ai
 
 <p align="center">
-  <img src="assets/avatar.png" alt="Mahiru AI" width="900">
+  <img src="assets/avatar.png" alt="Mahiru AI" width="600">
 </p>
+
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![GitHub latest commit](https://badgen.net/github/last-commit/Elytrya/mahiru-ai)](https://GitHub.com/Elytrya/mahiru-ai/commit/)
+[![GitHub branches](https://badgen.net/github/branches/Elytrya/mahiru-ai)](https://github.com/Elytrya/mahiru-ai/)
+[![GitHub commits](https://badgen.net/github/commits/Elytrya/mahiru-ai)](https://GitHub.com/Elytrya/mahiru-ai/commit/)
+[![GitHub issues](https://badgen.net/github/issues/Elytrya/mahiru-ai/)](https://GitHub.com/Elytrya/mahiru-ai/issues/)
 
 <Живая> виртуальная девушка-компаньонка в Telegram:
 своя личность и вкусы, память, живое настроение, пишет первой. Анимешница и геймерша: говорит про

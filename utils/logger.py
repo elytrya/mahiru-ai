@@ -62,7 +62,7 @@ def setup_logger(level: str = "INFO") -> None:
 
     try:
         log.level("DEBUG",   icon="🔍", color="<blue>")
-        log.level("INFO",    icon="ℹ️", color="<white>")
+        log.level("INFO",    icon="💬", color="<white>")
         log.level("SUCCESS", icon="✨", color="<green>")
         log.level("WARNING", icon="⚠️ ", color="<yellow>")
         log.level("ERROR",   icon="💥", color="<red>")

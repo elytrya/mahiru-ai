@@ -10,3 +10,5 @@ mahiru.db
 .vscode/
 .DS_Store
 downloads/
+*.zip
+*.db
