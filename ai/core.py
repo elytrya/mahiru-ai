@@ -8,14 +8,19 @@ from dataclasses import dataclass, field
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import datetime as dt
+
 from ai.providers.base import BaseProvider, ChatMessage
 from ai.providers.factory import build_provider
-from ai.prompts import build_system_prompt
+from ai.prompts import build_system_prompt, build_petname_prompt
+from ai.context import build_dynamic_context, closeness_level
 from ai import mood as mood_mod
+from config import settings as settings_mod
 from db import repo
 from db.session import SessionLocal
 from memory.manager import MemoryManager
 from methods.registry import tool_specs, run_tool
+from utils.humanize import dedash
 from utils.logger import log
 
 MAX_TOOL_ROUNDS = 4  # больше и так не надо
@@ -25,10 +30,56 @@ _MD_LINK = re.compile(r"\[([^\]]+)\]\((?:https?:|www\.)[^)]*\)")
 _BARE_URL = re.compile(r"https?://\S+|www\.\S+")
 _LIST_MARK = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s*")
 
+# сообщения, на которые тулы не нужны в принципе (приветствия, болталка, ack)
+_TRIVIAL = {
+    "привет", "прив", "приветик", "приветики", "хай", "хеллоу", "hello", "hi", "ку",
+    "здарова", "здорова", "здравствуй", "здравствуйте", "дратути", "йо", "салют",
+    "доброе утро", "добрый день", "добрый вечер", "спокойной ночи", "споки", "спокики",
+    "спасибо", "спс", "благодарю", "пасиб", "пасибо", "спасибочки", "мерси",
+    "пока", "покеда", "до встречи", "до завтра", "бб",
+    "ок", "окей", "ok", "okay", "угу", "ага", "да", "нет", "неа", "не-а",
+    "хорошо", "ладно", "понятно", "понял", "поняла", "ясно", "хай", "кек", "лол",
+    "как дела", "как ты", "чё как", "че как", "как жизнь", "что делаешь", "чё делаешь",
+    "че делаешь", "чем занята", "чем занимаешься", "как настроение", "скучала",
+}
+_NORM_RE = re.compile(r"[^0-9a-zа-яё ]", re.IGNORECASE)
+
+def _is_trivial(text: str) -> bool:
+    """Приветствие/болталка/ack — тут никакие инструменты не нужны."""
+    t = _NORM_RE.sub("", (text or "").lower()).strip()
+    t = re.sub(r"\s+", " ", t)
+    if not t:
+        return True
+    return t in _TRIVIAL
+
+# признак, что модель вывалила tool-call/JSON вместо нормального текста
+_TOOLJSON_RE = re.compile(
+    r'\{[^{}]*"(?:type|name|tool_calls|function)"\s*:.*'
+    r'"(?:parameters|arguments|tool_calls|function|name)"',
+    re.DOTALL,
+)
+
+def _strip_tool_json(text: str) -> str:
+    """Последняя страховка: не показывать юзеру сырой JSON тул-колла."""
+    if not text:
+        return text
+    t = text.strip()
+    if t.startswith("{") and _TOOLJSON_RE.search(t):
+        return ""
+    # вырезаем fenced ```json {...}``` и голые JSON-объекты тул-коллов внутри текста
+    t = re.sub(r"```(?:json)?\s*\{.*?\}\s*```", "", t, flags=re.DOTALL)
+    t = _TOOLJSON_RE.sub("", t)
+    return t.strip()
+
 # выпиливаем ссылки и картинки, она не каталог
 def _humanize(text: str) -> str:
     if not text:
         return text
+    text = _strip_tool_json(text)
+    if not text:
+        return text
+    # длинное тире «—» / «–» → обычный дефис «-» (управляется NO_EMDASH)
+    text = dedash(text)
     text = _MD_IMG.sub("", text)
     text = _MD_LINK.sub(lambda m: m.group(1), text)
     text = _BARE_URL.sub("", text)
@@ -160,6 +211,49 @@ class AICore:
 
         asyncio.create_task(_bg())
 
+    async def _maybe_make_petname(self, session: AsyncSession, user_id: int, user_row) -> None:
+        """Когда близость достигла порога - Махиру сама придумывает ласковое прозвище (один раз)."""
+        if not getattr(settings_mod, "PETNAMES_ENABLED", True):
+            return
+        if user_row is None or getattr(user_row, "pet_name", None):
+            return
+        threshold = int(getattr(settings_mod, "PETNAME_THRESHOLD", 30) or 30)
+        if int(getattr(user_row, "closeness", 0) or 0) < threshold:
+            return
+        # пробуем придумать только ОДИН раз (гард через Setting), чтобы не дёргать провайдер каждый раз
+        guard = f"petname_tried:{user_id}"
+        try:
+            if await repo.get_setting(session, guard, None):
+                return
+            await repo.set_setting(session, guard, "1")
+        except Exception:
+            pass
+        try:
+            personality = await repo.get_personality(session)
+            prompt = build_petname_prompt(personality)
+            resp = await self.provider.chat(
+                [ChatMessage("system", prompt),
+                 ChatMessage("user", "Придумай прозвище")],
+                tools=None, temperature=0.9,
+            )
+            raw = (resp.text or "").strip()
+        except Exception:
+            log.exception("генерация пет-нейма упала")
+            return
+        # санитизация: первое слово, без кавычек/знаков
+        name = raw.splitlines()[0].strip() if raw else ""
+        name = re.sub(r"[\"'`.,!?:;()\[\]]", "", name).strip()
+        name = name.split()[0] if name else ""
+        name = name[:32]
+        if not name:
+            return
+        try:
+            await repo.set_pet_name(session, user_id, name)
+            user_row.pet_name = name
+            log.info(f"💕 Махиру придумала пет-нейм для {user_id}: {name!r}")
+        except Exception:
+            log.exception("сохранение пет-нейма упало")
+
     async def respond(self, session: AsyncSession, turn: Turn) -> RespondResult:
         personality = await repo.get_personality(session)
         mood_state = await repo.get_mood(session, turn.user_id)
@@ -191,7 +285,8 @@ class AICore:
                     )
 
         memories = await self.memory.retrieve(session, turn.user_id, turn.text)
-        history = await repo.recent_messages(session, turn.user_id, limit=16)
+        # 12 вместо 16: короче контекст = меньше токенов на каждый запрос (связность сохраняется)
+        history = await repo.recent_messages(session, turn.user_id, limit=12)
 
         emo = MOOD_EMOJI.get(mood_state.mood, "💭")
         log.info(
@@ -201,7 +296,33 @@ class AICore:
         )
         log.info(f"👤 user: {turn.text[:80]!r}")
 
-        system_prompt = build_system_prompt(personality, mood_state, memories)
+        # --- динамика характера: близость / пет-нейм / ревность / энергия ---
+        # когда он последний раз писал (из истории, ещё без текущего сообщения)
+        last_user_ts = None
+        for m in reversed(history):
+            if m.role == "user" and getattr(m, "created_at", None):
+                last_user_ts = m.created_at
+                break
+
+        user_row = None
+        try:
+            user_row = await repo.get_user(session, turn.user_id)
+            if user_row is not None and getattr(settings_mod, "CLOSENESS_ENABLED", True):
+                per = int(getattr(settings_mod, "CLOSENESS_PER_MSG", 1) or 1)
+                new_c = await repo.bump_closeness(session, turn.user_id, per)
+                user_row.closeness = new_c
+                # когда близость выросла - сама придумывает ласковое прозвище (один раз)
+                await self._maybe_make_petname(session, turn.user_id, user_row)
+        except Exception:
+            log.exception("динамика характера (closeness/petname) упала")
+
+        dynamic = None
+        try:
+            dynamic = build_dynamic_context(user_row, last_user_ts)
+        except Exception:
+            log.exception("build_dynamic_context упал")
+
+        system_prompt = build_system_prompt(personality, mood_state, memories, dynamic=dynamic)
 
         messages: list[ChatMessage] = [ChatMessage("system", system_prompt)]
         for m in history:
@@ -222,8 +343,15 @@ class AICore:
             f"история={len(history)} тулов_доступно={len(tools)}"
         )
 
+        # на 'привет'/'спасибо'/болталку тулы не нужны — не даём модели лезть в поиск
+        if _is_trivial(turn.text):
+            log.info("💤 тривиальное сообщение — отвечаю без инструментов")
+            tools = None
+
         for _round in range(MAX_TOOL_ROUNDS):
-            resp = await self.provider.chat(messages, tools=tools, temperature=0.85)
+            # max_tokens=600: она пишет коротко, больше не нужно - экономим на выводе
+            resp = await self.provider.chat(messages, tools=tools, temperature=0.85,
+                                            max_tokens=600)
 
             calls = _dedup_tool_calls(resp.tool_calls or [])
             if calls:
@@ -262,7 +390,7 @@ class AICore:
                                         if not k.startswith("_send_") and k != "_bytes"}
                     else:
                         clean_result = result
-                    payload = json.dumps(clean_result, ensure_ascii=False, default=str)[:6000]
+                    payload = json.dumps(clean_result, ensure_ascii=False, default=str)[:3000]
                     messages.append(ChatMessage("tool", payload,
                                                 name=tc.name, tool_call_id=tc.id))
 

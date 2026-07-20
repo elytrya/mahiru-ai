@@ -86,5 +86,11 @@ class LibSearchTool(Tool):
             "items": out,
             "_hint": "Ты живая девушка, НЕ поисковик. НЕ выводи список, НЕ пиши ссылки/url/обложки. По-человечески скажи что нашла (1-2 тайтла по названию), добавь своё отношение и веди диалог: спроси, ту ли имел в виду и хочет ли почитать/скачать. Скачивание запустится кнопками само.",
         }
+        if out and user_id:
+            try:
+                from handlers import lib_download as _ld
+                _ld._LAST_QUERY[user_id] = (kind, query)
+            except Exception:
+                pass
         await cache_set(ck, result, ttl=300)
         return result

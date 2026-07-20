@@ -293,6 +293,20 @@ def step_google(data: dict) -> None:
     if tok:
         data["LIB_TOKEN"] = tok
 
+    p("")
+    p("[C] Погода-забота (OpenWeather) - Махиру сама напишет «там у тебя дождь, возьми зонт».")
+    p("    Бесплатный ключ: https://openweathermap.org/api -> Sign up -> API keys.")
+    p("    Ключ можно ввести позже в Telegram: /weather key <ключ>.")
+    p("")
+    wkey = ask_optional("OPENWEATHER_API_KEY (пусто = пропустить)", "")
+    if wkey:
+        data["OPENWEATHER_API_KEY"] = wkey
+        data["WEATHER_CITY"] = ask("В каком городе ты живёшь? (напр. Москва)")
+        data["WEATHER_ENABLED"] = "true"
+        data["WEATHER_CARE_HOUR"] = ask_number("В какой час писать про погоду (0..23)", "8", "int")
+    else:
+        data["WEATHER_ENABLED"] = "false"
+
 def step_ui(data: dict) -> None:
     hr()
     p("Шаг 5/5 - Поведение в Telegram")
@@ -304,6 +318,65 @@ def step_ui(data: dict) -> None:
     p("   (ПОИСК в Гугле, ПОИСК аниме, СОХРАНИЛ в память и т.д.).")
     p("   Клик по кнопке покажет что именно искали.")
     data["SHOW_TOOL_CALLS"] = "true" if ask_bool("Включить кнопки тулов?", True) else "false"
+
+def step_human(data: dict) -> None:
+    hr()
+    p("Очеловечивание - чтоб она вела себя как живая девушка 🌸")
+    p("(всё это потом можно менять в /admin -> Человечность или /humanset)")
+    p("")
+    p("1) Заменять длинное тире '—' на обычный дефис '-'.")
+    data["NO_EMDASH"] = "true" if ask_bool("Заменять тире на -?", True) else "false"
+    p("")
+    p("2) Имитация набора: паузы + 'печатает…' перед ответом, отвечает не мгновенно.")
+    hum = ask_bool("Включить имитацию набора?", True)
+    data["HUMAN_TYPING"] = "true" if hum else "false"
+    if hum:
+        data["TYPING_SPEED_CPS"] = ask_number("Скорость набора (симв/сек, меньше = дольше печатает)", "14", "float")
+        p("")
+        p("3) Разбивать длинный ответ на несколько сообщений (как живой человек).")
+        data["SPLIT_MESSAGES"] = "true" if ask_bool("Разбивать на сообщения?", True) else "false"
+        p("")
+        p("4) Иногда 'занята' и отвечает заметно позже (шанс 0..1, напр. 0.12 = 12%).")
+        data["IGNORE_CHANCE"] = ask_number("Шанс 'занята' (0 = никогда)", "0.12", "float")
+    else:
+        data["SPLIT_MESSAGES"] = "false"
+
+    p("")
+    p("5) Эмодзи-реакции: иногда ставит реакцию (❤, 😂...) вместо/перед ответом.")
+    react = ask_bool("Включить эмодзи-реакции?", True)
+    data["REACTIONS_ENABLED"] = "true" if react else "false"
+    if react:
+        data["REACTION_CHANCE"] = ask_number("Шанс реакции (0..1)", "0.25", "float")
+    p("")
+    p("6) Опечатки с самоисправлением: иногда опечатается, потом '*то есть ...'.")
+    typo = ask_bool("Включить опечатки?", True)
+    data["TYPO_ENABLED"] = "true" if typo else "false"
+    if typo:
+        data["TYPO_CHANCE"] = ask_number("Шанс опечатки (0..1)", "0.12", "float")
+    p("")
+    p("7) Настроение влияет на скорость: злая - медленнее/резче, влюблённая - быстрее/теплее.")
+    data["MOOD_SPEED_ENABLED"] = "true" if ask_bool("Включить влияние настроения?", True) else "false"
+    p("")
+    p("8) 'Прочитала, но молчит': иногда молчит пару минут, потом пишет.")
+    rs = ask_bool("Включить 'прочитала, молчит'?", True)
+    data["READ_SILENCE_ENABLED"] = "true" if rs else "false"
+    if rs:
+        data["READ_SILENCE_CHANCE"] = ask_number("Шанс (0..1)", "0.07", "float")
+    p("")
+    p("9) Стикеры/кастом-эмодзи по настроению (потом /sticker для набора).")
+    stick = ask_bool("Включить стикеры?", True)
+    data["STICKERS_ENABLED"] = "true" if stick else "false"
+    if stick:
+        data["STICKER_CHANCE"] = ask_number("Шанс стикера (0..1)", "0.15", "float")
+        data["STICKER_IDS_DEFAULT"] = ask_optional(
+            "ID кастом-эмодзи/стикеров через запятую (можно пусто)",
+            "6365185259734040633")
+    p("")
+    p("10) Памятные даты: сама поздравляет с годовщинами/др (потом /date).")
+    dts = ask_bool("Включить памятные даты?", True)
+    data["DATES_ENABLED"] = "true" if dts else "false"
+    if dts:
+        data["DATES_GREET_HOUR"] = ask_number("В какой час поздравлять (0..23)", "10", "int")
 
 def step_autonomous(data: dict) -> None:
     hr()
@@ -354,10 +427,52 @@ def save_env(data) -> None:
         f"GOOGLE_API_KEY={g('GOOGLE_API_KEY')}",
         f"GOOGLE_CX={g('GOOGLE_CX')}",
         f"LIB_TOKEN={g('LIB_TOKEN')}",
+        f"OPENWEATHER_API_KEY={g('OPENWEATHER_API_KEY')}",
+        "",
+        "# ==== Погода-забота (OpenWeather) ====",
+        f"WEATHER_ENABLED={g('WEATHER_ENABLED', 'true')}",
+        f"WEATHER_CITY={g('WEATHER_CITY', '')}",
+        f"WEATHER_CARE_HOUR={g('WEATHER_CARE_HOUR', '8')}",
+        f"WEATHER_UNITS={g('WEATHER_UNITS', 'metric')}",
+        f"WEATHER_LANG={g('WEATHER_LANG', 'ru')}",
+        "",
+        "# ==== Характер: ревность / энергия / близость / пет-неймы ====",
+        f"JEALOUSY_ENABLED={g('JEALOUSY_ENABLED', 'true')}",
+        f"JEALOUSY_HOURS={g('JEALOUSY_HOURS', '12')}",
+        f"ENERGY_ENABLED={g('ENERGY_ENABLED', 'true')}",
+        f"CLOSENESS_ENABLED={g('CLOSENESS_ENABLED', 'true')}",
+        f"CLOSENESS_PER_MSG={g('CLOSENESS_PER_MSG', '1')}",
+        f"PETNAMES_ENABLED={g('PETNAMES_ENABLED', 'true')}",
+        f"PETNAME_THRESHOLD={g('PETNAME_THRESHOLD', '30')}",
         "",
         "# ==== UI ====",
         f"TYPING_INDICATOR={g('TYPING_INDICATOR', 'true')}",
         f"SHOW_TOOL_CALLS={g('SHOW_TOOL_CALLS', 'true')}",
+        "",
+        "# ==== Очеловечивание ====",
+        f"NO_EMDASH={g('NO_EMDASH', 'true')}",
+        f"HUMAN_TYPING={g('HUMAN_TYPING', 'true')}",
+        f"TYPING_SPEED_CPS={g('TYPING_SPEED_CPS', '14')}",
+        f"SPLIT_MESSAGES={g('SPLIT_MESSAGES', 'true')}",
+        f"IGNORE_CHANCE={g('IGNORE_CHANCE', '0.12')}",
+        "",
+        "# ==== Живые реакции / опечатки / настроение ====",
+        f"REACTIONS_ENABLED={g('REACTIONS_ENABLED', 'true')}",
+        f"REACTION_CHANCE={g('REACTION_CHANCE', '0.25')}",
+        f"TYPO_ENABLED={g('TYPO_ENABLED', 'true')}",
+        f"TYPO_CHANCE={g('TYPO_CHANCE', '0.12')}",
+        f"MOOD_SPEED_ENABLED={g('MOOD_SPEED_ENABLED', 'true')}",
+        f"READ_SILENCE_ENABLED={g('READ_SILENCE_ENABLED', 'true')}",
+        f"READ_SILENCE_CHANCE={g('READ_SILENCE_CHANCE', '0.07')}",
+        f"READ_SILENCE_MIN_SECONDS={g('READ_SILENCE_MIN_SECONDS', '45')}",
+        f"READ_SILENCE_MAX_SECONDS={g('READ_SILENCE_MAX_SECONDS', '150')}",
+        "",
+        "# ==== Стикеры / памятные даты ====",
+        f"STICKERS_ENABLED={g('STICKERS_ENABLED', 'true')}",
+        f"STICKER_CHANCE={g('STICKER_CHANCE', '0.15')}",
+        f"STICKER_IDS_DEFAULT={g('STICKER_IDS_DEFAULT', '6365185259734040633')}",
+        f"DATES_ENABLED={g('DATES_ENABLED', 'true')}",
+        f"DATES_GREET_HOUR={g('DATES_GREET_HOUR', '10')}",
         "",
         "# ==== Autonomous ====",
         f"AUTONOMOUS_ENABLED={g('AUTONOMOUS_ENABLED', 'true')}",
@@ -415,6 +530,7 @@ def main() -> None:
     step_db(data)
     step_google(data)
     step_ui(data)
+    step_human(data)
     step_autonomous(data)
 
     save_env(data)

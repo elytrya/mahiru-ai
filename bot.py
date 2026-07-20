@@ -46,17 +46,41 @@ _first_run_check()
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
 
 from aiogram.types import ErrorEvent
 from aiogram.exceptions import TelegramNetworkError
 
+from aiogram.types import BotCommand, BotCommandScopeDefault
+
 from config import settings
 from utils.logger import setup_logger, log
-from utils.settings_kv import load_overrides
+from utils.settings_kv import load_overrides, load_behavior_overrides
 from db.session import init_db
 from handlers import messages, admin, callbacks, lib_download, steam_flow
 from scheduler.autonomous import AutonomousScheduler
+
+# команды, которые покажутся в меню Telegram (кнопка «Menu» рядом со скрепкой)
+BOT_COMMANDS = [
+    BotCommand(command="start",    description="🌸 Привет / начать общение"),
+    BotCommand(command="admin",    description="⚙️ Панель настроек"),
+    BotCommand(command="human",    description="🎭 Очеловечивание (печатает, паузы)"),
+    BotCommand(command="humanset", description="🎛 Тонкая настройка поведения"),
+    BotCommand(command="date",     description="📅 Памятные даты (поздравляет сама)"),
+    BotCommand(command="sticker",  description="🏷 Стикеры / кастом-эмодзи"),
+    BotCommand(command="set",      description="🌺 Изменить личность"),
+    BotCommand(command="keys",     description="🔐 API-ключи провайдеров"),
+    BotCommand(command="setkey",   description="🗝 Сохранить ключ/токен"),
+]
+
+async def _setup_bot_commands(bot: "Bot") -> None:
+    """Регистрирует команды в меню Telegram, чтоб они были под кнопкой Menu."""
+    try:
+        await bot.set_my_commands(BOT_COMMANDS, scope=BotCommandScopeDefault())
+        log.info(f"📋 зарегистрировано {len(BOT_COMMANDS)} команд в меню Telegram")
+    except Exception:
+        log.exception("set_my_commands failed")
 
 async def main() -> None:
     setup_logger(settings.LOG_LEVEL)
@@ -71,8 +95,39 @@ async def main() -> None:
     except Exception:
         log.exception("load_overrides failed")
 
+    try:
+        nb = await load_behavior_overrides()
+        if nb:
+            log.info(f"🎭 подгружено {nb} настроек очеловечивания из БД")
+    except Exception:
+        log.exception("load_behavior_overrides failed")
+
+    # тишим шумные фоновые падения сети (напр. индикатор «печатает…» не смог отправиться)
+    def _loop_exc_handler(loop, context):
+        exc = context.get("exception")
+        if isinstance(exc, (TelegramNetworkError, OSError, ConnectionError)):
+            log.warning(f"сеть Telegram подтормозила (фон): {exc}")
+            return
+        loop.default_exception_handler(context)
+    try:
+        asyncio.get_running_loop().set_exception_handler(_loop_exc_handler)
+    except Exception:
+        pass
+
+    # сессия с таймаутом и (опционально) прокси — обход блокировок Telegram
+    if settings.TELEGRAM_PROXY:
+        session = AiohttpSession(proxy=settings.TELEGRAM_PROXY)
+        log.info(f"🌐 Telegram через прокси: {settings.TELEGRAM_PROXY}")
+    else:
+        session = AiohttpSession()
+    try:
+        session.timeout = settings.TELEGRAM_TIMEOUT
+    except Exception:
+        pass
+
     bot = Bot(
         token=settings.BOT_TOKEN,
+        session=session,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     dp = Dispatcher()
@@ -91,6 +146,20 @@ async def main() -> None:
         log.exception("необработанная ошибка в хендлере", exc_info=event.exception)
         return True
 
+    # если активный провайдер — ollama, поднимаем её заранее в фоне (чтоб первый ответ не ждал)
+    if settings.DEFAULT_PROVIDER.lower() == "ollama":
+        async def _prewarm_ollama() -> None:
+            try:
+                from ai.providers import ollama_bootstrap
+                log.info("🔄 готовлю Ollama в фоне…")
+                await ollama_bootstrap.ensure_ollama_ready(
+                    settings.OLLAMA_HOST, settings.OLLAMA_MODEL
+                )
+                log.info("✅ Ollama готова к работе")
+            except Exception:
+                log.exception("авто-поднятие Ollama не удалось (попробую при первом сообщении)")
+        asyncio.create_task(_prewarm_ollama())
+
     scheduler = AutonomousScheduler(bot)
     if settings.AUTONOMOUS_ENABLED:
         scheduler.start()
@@ -98,6 +167,7 @@ async def main() -> None:
     try:
         me = await bot.get_me()
         log.info(f"Подключена как @{me.username}")
+        await _setup_bot_commands(bot)
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         scheduler.shutdown()

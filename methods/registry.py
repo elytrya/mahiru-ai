@@ -15,6 +15,7 @@ from methods.lib.downloader import LibDownloadTool
 from methods.memory.save import MemorySaveTool
 from methods.image.vision import ImageVisionTool
 from methods.api_keys.request import RequestApiKeyTool
+from methods.weather.tool import WeatherTool
 
 _TOOLS: dict[str, Tool] = {}
 
@@ -29,6 +30,7 @@ for _t in (
     LibSearchTool(), LibInfoTool(), LibDownloadTool(),
     MemorySaveTool(),
     ImageVisionTool(),
+    WeatherTool(),
     RequestApiKeyTool(),
 ):
     register(_t)

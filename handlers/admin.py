@@ -4,6 +4,9 @@ from aiogram.filters import Command
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
 from config import settings
+from db.session import SessionLocal
+from db import repo
+from utils.settings_kv import BEHAVIOR_FIELDS, set_behavior, set_key, get_key
 
 router = Router(name="admin")
 
@@ -18,6 +21,7 @@ def admin_menu() -> InlineKeyboardMarkup:
          InlineKeyboardButton(text="🔌 Провайдер",     callback_data="adm:provider")],
         [InlineKeyboardButton(text="🔐 API ключи",   callback_data="adm:keys"),
          InlineKeyboardButton(text="📊 Статистика",   callback_data="adm:stats")],
+        [InlineKeyboardButton(text="🎭 Человечность", callback_data="adm:human")],
         [InlineKeyboardButton(text="🧹 Очистка",     callback_data="adm:clear"),
          InlineKeyboardButton(text="📦 Импорт/Экспорт",
                               callback_data="adm:io")],
@@ -29,3 +33,145 @@ async def admin_cmd(msg: Message):
     if not is_admin(msg.from_user.id):
         return
     await msg.answer("Панель администратора:", reply_markup=admin_menu())
+
+
+@router.message(Command("human"))
+async def human_cmd(msg: Message):
+    """Быстрый доступ к панели очеловечивания."""
+    if not is_admin(msg.from_user.id):
+        return
+    from handlers.callbacks import render_human_panel
+    text, kb = render_human_panel()
+    await msg.answer(text, reply_markup=kb)
+
+
+@router.message(Command("humanset"))
+async def humanset_cmd(msg: Message):
+    """Тонкая настройка: /humanset ПОЛЕ ЗНАЧЕНИЕ."""
+    if not is_admin(msg.from_user.id):
+        return
+    parts = (msg.text or "").split(maxsplit=2)
+    allowed = ", ".join(f.lower() for f in BEHAVIOR_FIELDS)
+    if len(parts) < 3:
+        await msg.answer(
+            "Формат: <code>/humanset ПОЛЕ ЗНАЧЕНИЕ</code>\n\n"
+            "Примеры:\n"
+            "<code>/humanset typing_speed_cps 20</code>\n"
+            "<code>/humanset ignore_chance 0.2</code>\n"
+            "<code>/humanset no_emdash on</code>\n"
+            "<code>/humanset split_messages off</code>\n\n"
+            f"Доступные поля:\n<code>{allowed}</code>",
+        )
+        return
+    field, value = parts[1], parts[2].strip()
+    if field.upper() not in BEHAVIOR_FIELDS:
+        await msg.answer(f"Нет такого поля. Доступные:\n<code>{allowed}</code>")
+        return
+    await set_behavior(field, value)
+    new_val = getattr(settings, field.upper(), value)
+    await msg.answer(f"Ок, <b>{field.upper()}</b> = <b>{new_val}</b> ✅")
+
+
+@router.message(Command("weather"))
+async def weather_cmd(msg: Message):
+    """Погода-забота (OpenWeather): город, ключ, час, вкл/выкл, тест."""
+    if not is_admin(msg.from_user.id):
+        return
+    from utils.weather import get_weather, format_weather
+    parts = (msg.text or "").split(maxsplit=2)
+    sub = parts[1].lower() if len(parts) > 1 else ""
+    arg = parts[2].strip() if len(parts) > 2 else ""
+
+    if sub in ("city", "город") and arg:
+        await set_behavior("WEATHER_CITY", arg)
+        await msg.answer(f"Ок, город для погоды: <b>{arg}</b> ✅")
+        return
+    if sub == "key" and arg:
+        await set_key("OPENWEATHER_API_KEY", arg)
+        await msg.answer("Ок, ключ OpenWeather сохранён ✅")
+        return
+    if sub in ("window", "окно", "hours") and arg:
+        # окно случайного времени: "8 22" или "8-22"
+        nums = [x for x in arg.replace("-", " ").split() if x.strip().isdigit()]
+        if len(nums) >= 2:
+            lo, hi = int(nums[0]), int(nums[1])
+            if 0 <= lo <= 23 and 0 <= hi <= 23 and lo <= hi:
+                await set_behavior("WEATHER_MIN_HOUR", str(lo))
+                await set_behavior("WEATHER_MAX_HOUR", str(hi))
+                await msg.answer(f"Ок, окно случайного времени погоды: <b>{lo}:00-{hi}:00</b> ✅")
+                return
+        await msg.answer("Формат: <code>/weather window 8 22</code> (от и до, часы 0..23)")
+        return
+    if sub in ("on", "off", "вкл", "выкл"):
+        await set_behavior("WEATHER_ENABLED", "on" if sub in ("on", "вкл") else "off")
+        state = "включена" if getattr(settings, "WEATHER_ENABLED", True) else "выключена"
+        await msg.answer(f"Погода-забота теперь <b>{state}</b> ✅")
+        return
+    if sub == "test":
+        w = await get_weather()
+        if not w:
+            await msg.answer("Не смогла получить погоду. Проверь ключ и город: <code>/weather key ...</code>, <code>/weather city ...</code>")
+            return
+        await msg.answer("Сейчас: " + format_weather(w))
+        return
+
+    # без аргументов - показать настройки и текущую погоду
+    enabled = "да" if getattr(settings, "WEATHER_ENABLED", True) else "нет"
+    city = getattr(settings, "WEATHER_CITY", "") or "(не задан)"
+    lo = getattr(settings, "WEATHER_MIN_HOUR", 8)
+    hi = getattr(settings, "WEATHER_MAX_HOUR", 22)
+    has_key = "есть" if await get_key("OPENWEATHER_API_KEY") else "нет"
+    w = await get_weather()
+    now_line = ("\nСейчас: " + format_weather(w)) if w else ""
+    await msg.answer(
+        "🌤 <b>Погода-забота (OpenWeather)</b>\n"
+        f"Включена: <b>{enabled}</b>\n"
+        f"Город: <b>{city}</b>\n"
+        f"Ключ API: <b>{has_key}</b>\n"
+        f"Пишет раз в день в случайное время: <b>{lo}:00-{hi}:00</b>"
+        + now_line +
+        "\n\nКоманды:\n"
+        "<code>/weather city Москва</code> - город\n"
+        "<code>/weather key &lt;APIKEY&gt;</code> - ключ OpenWeather\n"
+        "<code>/weather window 8 22</code> - окно случайного времени\n"
+        "<code>/weather on</code> / <code>/weather off</code>\n"
+        "<code>/weather test</code> - проверить сейчас"
+    )
+
+
+@router.message(Command("petname"))
+async def petname_cmd(msg: Message):
+    """Ласковое прозвище (пет-нейм): показать / задать / сбросить."""
+    if not is_admin(msg.from_user.id):
+        return
+    parts = (msg.text or "").split(maxsplit=1)
+    arg = parts[1].strip() if len(parts) > 1 else ""
+    async with SessionLocal() as s:
+        user = await repo.upsert_user(
+            s, msg.from_user.id,
+            username=msg.from_user.username,
+            first_name=msg.from_user.first_name,
+        )
+        if not arg:
+            cur = getattr(user, "pet_name", None)
+            close = int(getattr(user, "closeness", 0) or 0)
+            if cur:
+                await msg.answer(
+                    f"💕 Махиру зовёт тебя: <b>{cur}</b>\nБлизость: <b>{close}</b> очк.\n\n"
+                    "<code>/petname зайка</code> - задать своё\n<code>/petname clear</code> - сбросить (сама придумает заново)"
+                )
+            else:
+                await msg.answer(
+                    f"Пока прозвища нет (близость: <b>{close}</b> очк.). "
+                    "Махиру придумает его сама, когда вы станете ближе.\n\n"
+                    "<code>/petname зайка</code> - задать вручную"
+                )
+            return
+        if arg.lower() in ("clear", "сброс", "сбросить", "none", "-"):
+            await repo.set_pet_name(s, user.id, None)
+            await repo.set_setting(s, f"petname_tried:{user.id}", "")
+            await msg.answer("Ок, прозвище сброшено. Махиру придумает новое сама ✅")
+            return
+        name = arg.split()[0][:32]
+        await repo.set_pet_name(s, user.id, name)
+        await msg.answer(f"Ок, теперь Махиру зовёт тебя <b>{name}</b> 💕")

@@ -23,19 +23,26 @@ _FREE_CANDIDATES = [
     "Yqcloud",
 ]
 
+# провайдеры, для которых имеет смысл хранить пользовательский ключ (G4F_KEY_*)
+_KEYABLE_PROVIDERS = _NEEDS_AUTH | {"HuggingChat", "Airforce", "ApiAirforce", "WeWordle"}
+
+# Свапнули приоритет: сначала deepseek/qwen/llama, gpt-4o-* уехали вниз (остались как fallback).
+# gpt-4o-mini держим вторым — он стабильнее всего тянет function-calling на бесплатных бэкендах.
 _MODEL_FALLBACKS = [
-    "gpt-4o-mini", "gpt-4o", "gpt-4", "gpt-4-turbo", "gpt-3.5-turbo",
+    "deepseek-v3", "deepseek-r1", "deepseek-chat",
+    "gpt-4o-mini",
     "qwen-2.5-72b", "qwen-2.5-32b", "qwen-2.5-14b", "qwen-2.5-7b",
     "qwen-2-72b", "qwen-2-7b", "qwen-turbo", "qwen-plus", "qwen",
-    "deepseek-v3", "deepseek-r1", "deepseek-chat", "deepseek-coder",
     "llama-3.3-70b", "llama-3.1-405b", "llama-3.1-70b", "llama-3.1-8b",
     "llama-3-70b", "llama-3-8b",
+    "deepseek-coder",
     "gemma-2-27b", "gemma-2-9b", "gemma-3-27b",
     "mistral-large", "mistral-nemo", "mistral-7b", "mixtral-8x7b",
     "claude-3-5-sonnet", "claude-3-haiku", "claude-3-opus",
     "command-r-plus", "command-r",
     "phi-4", "phi-3.5",
     "grok-2", "sonar",
+    "gpt-4o", "gpt-4", "gpt-4-turbo", "gpt-3.5-turbo",
     "openai", "openai-fast", "openai-large",
     "default", "",
 ]
@@ -92,6 +99,66 @@ _OVERALL_DEADLINE    = 75.0
 _RACE_WIDTH          = 4
 _RACE_TIMEOUT        = 18.0
 _SHRINK_TARGET_CHARS = 6000
+
+# Строки-маркеры: провайдер вернул ОШИБКУ в виде "успешного" ответа
+# (напр. ApiAirforce: 'The model does not exist in discord.gg/airforce').
+_ERROR_CONTENT_MARKERS = (
+    "the model does not exist",
+    "discord.gg/airforce",
+    "discord.gg",
+    "no valid har",
+    "missingauth",
+    "missing auth",
+    "rate limit",
+    "rate-limit",
+    "too many requests",
+    "invalid api key",
+    "incorrect api key",
+    "api key is invalid",
+    "api key is required",
+    "<!doctype html",
+    "<html",
+    "insufficient_quota",
+    "you exceeded your current quota",
+    "internal server error",
+    "502 bad gateway",
+    "503 service",
+    "model_not_found",
+    "model not found",
+    "unauthorized",
+    "access denied",
+    "service temporarily unavailable",
+    "service unavailable",
+    "usage limit",
+    "upgrade to",
+)
+
+def _resp_text_and_tools(resp) -> tuple[str, bool]:
+    try:
+        msg = resp.choices[0].message
+    except Exception:
+        return "", False
+    text = getattr(msg, "content", None) or ""
+    has_tools = bool(getattr(msg, "tool_calls", None))
+    return text, has_tools
+
+def _looks_like_error_content(text: str) -> bool:
+    low = (text or "").strip().lower()
+    if not low:
+        return False
+    # длинный осмысленный ответ вряд ли целиком — ошибка
+    if len(low) > 600:
+        return False
+    return any(m in low for m in _ERROR_CONTENT_MARKERS)
+
+def _is_bad_response(resp) -> bool:
+    """True — если ответ бесполезен: пустой без тулов или текст-ошибка провайдера."""
+    text, has_tools = _resp_text_and_tools(resp)
+    if has_tools:
+        return False
+    if not (text or "").strip():
+        return True
+    return _looks_like_error_content(text)
 
 def _resolve(name: str):
     try:
@@ -252,6 +319,9 @@ class G4FProvider(BaseProvider):
         self._dead_providers: set[str] = set()
         self._shrunk_pairs: set[tuple[str, str]] = set()
         self._auth_needed: dict[str, str] = {}
+        # провайдеры, для которых у нас есть сохранённый ключ — их можно юзать даже из _NEEDS_AUTH
+        self._authed_providers: set[str] = set()
+        self._authed_loaded: bool = False
 
         try:
             from g4f.client import AsyncClient
@@ -287,13 +357,16 @@ class G4FProvider(BaseProvider):
         seen: set[str] = set()
 
         def _add(name: str | None):
-            if not name or name in seen or name in _NEEDS_AUTH:
-                return
-            if name in self._dead_providers:
+            if not name or name in seen:
                 return
             if name == "auto":
                 plan.append(("auto", None))
                 seen.add("auto")
+                return
+            # провайдер требует авторизацию — пускаем только если у нас есть его ключ
+            if name in _NEEDS_AUTH and name not in self._authed_providers:
+                return
+            if name in self._dead_providers:
                 return
             obj = _resolve(name)
             if obj is None:
@@ -304,11 +377,46 @@ class G4FProvider(BaseProvider):
         if self._last_ok:
             _add(self._last_ok[0])
         _add(self.forced_provider_name)
+        # сначала провайдеры с пользовательским ключом (они стабильнее бесплатных)
+        for n in sorted(self._authed_providers):
+            _add(n)
         for n in _FREE_CANDIDATES:
             _add(n)
         if "auto" not in seen:
             plan.append(("auto", None))
         return plan
+
+    async def _ensure_authed_loaded(self) -> None:
+        if self._authed_loaded:
+            return
+        self._authed_loaded = True
+        try:
+            from utils.settings_kv import get_key as _gk
+        except Exception:
+            return
+        authed: set[str] = set()
+        for name in _KEYABLE_PROVIDERS:
+            try:
+                if await _gk(f"G4F_KEY_{name.upper()}"):
+                    authed.add(name)
+            except Exception:
+                pass
+        self._authed_providers = authed
+        if authed:
+            log.info(f"🔑 g4f: есть пользовательские ключи для {', '.join(sorted(authed))}")
+
+    def reset_provider_auth(self, name: str | None = None) -> None:
+        """Сбросить 'dead'-пометки после того как юзер ввёл ключ, чтобы g4f снова попробовал провайдера."""
+        self._authed_loaded = False
+        self._last_ok = None
+        if name:
+            self._dead_providers.discard(name)
+            self._auth_needed.pop(name, None)
+            self._dead_pairs = {p for p in self._dead_pairs if p[0] != name}
+        else:
+            self._dead_providers.clear()
+            self._auth_needed.clear()
+            self._dead_pairs.clear()
 
     def _model_plan(self) -> list[str]:
         wanted = self.model
@@ -341,6 +449,9 @@ class G4FProvider(BaseProvider):
             resp = await self._one_call(pobj, model, payload)
             if resp is None:
                 raise RuntimeError("empty resp")
+            if _is_bad_response(resp):
+                self._dead_pairs.add((pname, model or "default"))
+                raise RuntimeError("bad content")
             return pname, resp
 
         tasks = {asyncio.create_task(_try(n, o)): n for n, o in cands}
@@ -417,6 +528,7 @@ class G4FProvider(BaseProvider):
 
     async def chat(self, messages, tools=None, temperature=0.8,
                    max_tokens=800) -> ChatResponse:
+        await self._ensure_authed_loaded()
         base_messages = self._msgs(messages)
         payload_common: dict[str, Any] = {
             "model": self.model,
@@ -536,6 +648,12 @@ class G4FProvider(BaseProvider):
                     continue
 
                 if resp is None:
+                    continue
+                if _is_bad_response(resp):
+                    self._dead_pairs.add(pair)
+                    errors.append(f"{prov_name}/{model or 'default'}: bad content")
+                    log.debug(f"g4f: {pair} — мусорный/ошибочный ответ, следующая")
+                    current_target = None
                     continue
                 self._last_ok = (prov_name, model)
                 shrink_note = f" (контекст~{current_target})" if current_target else ""

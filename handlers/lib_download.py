@@ -24,8 +24,10 @@ from utils.logger import log
 router = Router(name="lib_download")
 
 _DL_VERBS = (
-    r"(?:скачай|скачать|скачайте|скач|качни|качай|загруз|выкач|"
-    r"скинь|скинешь|пришли|достан|сохрани|download)"
+    # \w* чтобы ловить целые словоформы (скачаем/скачаю/качни/сохрани…),
+    # иначе 'скач' отгрызал префикс и в запрос летел мусор ('аем')
+    r"(?:скача\w*|скачай\w*|скач|качн\w*|кача\w*|загруз\w*|выкач\w*|"
+    r"скин\w*|пришл\w*|присыл\w*|достан\w*|сохран\w*|download)"
 )
 _KIND_WORDS = {
     "ranobe": r"ранобэ|ранобе|ранобчик|новелл|ranobe|novel",
@@ -37,7 +39,81 @@ _FILLER = {
     "please", "мне", "ещё", "еще", "эту", "это", "эт", "главы", "главу",
     "всю", "все", "всё", "новую", "давай", "ну", "же", "можешь", "можно",
     "ты", "а", "и", "на", "мне-то",
+    # местоимения — их нельзя искать буквально, это отсылка к предыдущему тайтлу
+    "ее", "её", "его", "их", "нее", "неё", "него", "нею", "них",
+    "этот", "эта", "эти", "этого", "этой", "тот", "та", "те", "it", "them",
 }
+
+# тайтлы бот/юзер пишут в кавычках — «Ангел по соседству» / "Ангела по соседству"
+_TITLE_QUOTE_RE = re.compile(r'[«"“„]\s*([^«»"“”„\n]{2,60}?)\s*[»"”“]')
+
+def _has_kind_word(text: str) -> bool:
+    low = (text or "").lower()
+    return any(re.search(pat, low) for pat in _KIND_WORDS.values())
+
+async def resolve_last_title(session, user_id: int) -> str | None:
+    """Если в запросе местоимение ('её'), тянем последний тайтл из переписки (в кавычках)."""
+    try:
+        msgs = await repo.recent_messages(session, user_id, limit=12)
+    except Exception:
+        return None
+    for m in reversed(msgs):  # от новых к старым
+        found = _TITLE_QUOTE_RE.findall(getattr(m, "content", "") or "")
+        if found:
+            return found[-1].strip()
+    return None
+
+async def resolve_download_target(session, user_id: int, text: str,
+                                 intent: tuple[str, str]) -> tuple[str, str] | None:
+    """Разрешает (kind, query) для скачивания, подтягивая название из контекста."""
+    kind, query = intent
+    if query and len(query) >= 2:
+        return kind, query
+    explicit_kind = _has_kind_word(text)
+    prev = _LAST_QUERY.get(user_id)
+    if prev:
+        prev_kind, prev_q = prev
+        if not explicit_kind:
+            kind = prev_kind
+        if prev_q and len(prev_q) >= 2:
+            return kind, prev_q
+    found = await resolve_last_title(session, user_id)
+    if found and len(found) >= 2:
+        return kind, found
+    return None
+
+def _clean_query(text: str) -> str:
+    words = [w for w in re.split(r"\s+", text or "")
+             if w and w.lower().strip(".,!?—–-«»\"'") not in _FILLER]
+    return " ".join(words).strip(" —–-.,!?«»\"'")
+
+def _looks_like_title(text: str) -> bool:
+    """Похоже ли сообщение на название тайтла (а не вопрос/болталка)."""
+    t = (text or "").strip()
+    if not t or "?" in t:
+        return False
+    if len(t.split()) > 7:
+        return False
+    if t.lower() in {"да", "давай", "ок", "окей", "ага", "нет", "неа", "не-а"}:
+        return False
+    return True
+
+async def maybe_followup_download(session, user_id: int, text: str) -> tuple[str, str] | None:
+    """После 'не нашла, напиши точнее' — следующее название сразу запускает скачивание."""
+    ent = _AWAIT_TITLE.get(user_id)
+    if not ent:
+        return None
+    kind, ts = ent
+    if time.time() - ts > _AWAIT_TTL:
+        _AWAIT_TITLE.pop(user_id, None)
+        return None
+    if not _looks_like_title(text):
+        return None
+    query = _clean_query(text) or text.strip()
+    if len(query) < 2:
+        return None
+    _AWAIT_TITLE.pop(user_id, None)
+    return kind, query
 
 def detect_download_intent(text: str) -> tuple[str, str] | None:
     if not text:
@@ -90,6 +166,9 @@ class _DLState:
 _SEARCH: dict[str, _SearchState] = {}
 _DL: dict[str, _DLState] = {}
 _LAST_QUERY: dict[int, tuple[str, str]] = {}
+# когда поиск ничего не нашёл — ждём уточнённое название следующим сообщением
+_AWAIT_TITLE: dict[int, tuple[str, float]] = {}
+_AWAIT_TTL = 600
 
 def _gc() -> None:
     now = time.time()
@@ -151,7 +230,6 @@ async def _flavor(user_id: int, key: str) -> str:
 
 async def start_download_flow(msg: Message, user_id: int, kind: str, query: str) -> None:
     _gc()
-    _LAST_QUERY[user_id] = (kind, query)
     await msg.answer(await _flavor(user_id, "searching"))
 
     try:
@@ -164,9 +242,12 @@ async def start_download_flow(msg: Message, user_id: int, kind: str, query: str)
     if not isinstance(res, dict) or res.get("error") or not res.get("items"):
         note = (await _flavor(user_id, "notfound")).format(q=query)
         await msg.answer(note)
+        _AWAIT_TITLE[user_id] = (kind, time.time())  # ждём уточнённое название
         return
 
     items = res["items"]
+    _LAST_QUERY[user_id] = (kind, query)   # запоминаем ТОЛЬКО успешный запрос
+    _AWAIT_TITLE.pop(user_id, None)
     sid = _sid("s", user_id)
     _SEARCH[sid] = _SearchState(user_id=user_id, kind=kind, query=query, items=items)
 
@@ -223,7 +304,7 @@ def _meta_caption(meta: dict) -> str:
             r += f" · 👁 {e(meta['views'])}"
         parts.append(r)
     if meta.get("genres"):
-        parts.append("🎭 " + e(", ".join(meta["genres"][:8])))
+        parts.append("��� " + e(", ".join(meta["genres"][:8])))
     if meta.get("authors"):
         parts.append("✍️ " + e(", ".join(meta["authors"][:4])))
     if meta.get("teams"):

@@ -5,7 +5,7 @@ from typing import Sequence
 from sqlalchemy import select, desc, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from db.models import User, Personality, Memory, Message, MoodState, Setting
+from db.models import User, Personality, Memory, Message, MoodState, Setting, ImportantDate
 
 async def upsert_user(session: AsyncSession, tg_id: int, username: str | None,
                      first_name: str | None) -> User:
@@ -21,6 +21,26 @@ async def upsert_user(session: AsyncSession, tg_id: int, username: str | None,
     await session.commit()
     await session.refresh(user)
     return user
+
+async def get_user(session: AsyncSession, user_id: int) -> User | None:
+    res = await session.execute(select(User).where(User.id == user_id))
+    return res.scalar_one_or_none()
+
+async def bump_closeness(session: AsyncSession, user_id: int, amount: int = 1) -> int:
+    """Повышает уровень близости и возвращает новое значение."""
+    u = await get_user(session, user_id)
+    if u is None:
+        return 0
+    u.closeness = int(u.closeness or 0) + int(amount)
+    await session.commit()
+    return u.closeness
+
+async def set_pet_name(session: AsyncSession, user_id: int, name: str | None) -> None:
+    u = await get_user(session, user_id)
+    if u is None:
+        return
+    u.pet_name = (name or None)
+    await session.commit()
 
 async def get_personality(session: AsyncSession) -> Personality:
     res = await session.execute(select(Personality).where(Personality.id == 1))
@@ -108,6 +128,39 @@ async def set_setting(session: AsyncSession, key: str, value: str) -> None:
     else:
         session.add(Setting(key=key, value=value))
     await session.commit()
+
+# ── памятные даты ───────────────────────────────────────────────────────────
+async def add_date(session: AsyncSession, user_id: int, title: str,
+                   month: int, day: int, year: int | None = None,
+                   kind: str = "custom") -> ImportantDate:
+    d = ImportantDate(user_id=user_id, title=title, month=month, day=day,
+                      year=year, kind=kind)
+    session.add(d)
+    await session.commit()
+    await session.refresh(d)
+    return d
+
+async def list_dates(session: AsyncSession, user_id: int) -> list[ImportantDate]:
+    res = await session.execute(
+        select(ImportantDate).where(ImportantDate.user_id == user_id)
+        .order_by(ImportantDate.month, ImportantDate.day)
+    )
+    return list(res.scalars().all())
+
+async def delete_date(session: AsyncSession, user_id: int, date_id: int) -> int:
+    res = await session.execute(
+        delete(ImportantDate).where(ImportantDate.user_id == user_id,
+                                    ImportantDate.id == date_id)
+    )
+    await session.commit()
+    return res.rowcount or 0
+
+async def dates_on(session: AsyncSession, month: int, day: int) -> list[ImportantDate]:
+    res = await session.execute(
+        select(ImportantDate).where(ImportantDate.month == month,
+                                    ImportantDate.day == day)
+    )
+    return list(res.scalars().all())
 
 async def all_user_ids(session: AsyncSession) -> Sequence[int]:
     res = await session.execute(select(User.id))

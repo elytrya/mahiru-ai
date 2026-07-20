@@ -15,6 +15,9 @@ class User(Base):
     lang: Mapped[str] = mapped_column(String(8), default="ru")
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
     last_seen: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    # уровень близости (копится со временем/общением) и ласковое прозвище
+    closeness: Mapped[int] = mapped_column(Integer, default=0)
+    pet_name: Mapped[str | None] = mapped_column(String(64))
 
     memories: Mapped[list["Memory"]] = relationship(back_populates="user", cascade="all, delete")
     messages: Mapped[list["Message"]] = relationship(back_populates="user", cascade="all, delete")
@@ -98,6 +101,17 @@ class ProviderSetting(Base):
     model: Mapped[str] = mapped_column(String(128))
     enabled: Mapped[int] = mapped_column(Integer, default=1)
     extra: Mapped[dict | None] = mapped_column(JSON)
+
+class ImportantDate(Base):
+    __tablename__ = "important_dates"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    title: Mapped[str] = mapped_column(String(256))
+    month: Mapped[int] = mapped_column(Integer)
+    day: Mapped[int] = mapped_column(Integer)
+    year: Mapped[int | None] = mapped_column(Integer)
+    kind: Mapped[str] = mapped_column(String(32), default="custom")  # birthday / anniversary / custom
+    created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
 class Task(Base):
     __tablename__ = "tasks"

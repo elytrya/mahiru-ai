@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import hashlib
 import json
 import os
@@ -17,11 +18,16 @@ from db.session import SessionLocal
 from db import repo
 from ai.core import AICore, Turn, ToolTrace, Attachment
 from handlers import lib_download, steam_flow
+from utils.humanize import send_humanlike, maybe_react
 from utils.logger import log
 from utils.settings_kv import set_key, get_key
 
 router = Router(name="messages")
 _core = AICore()
+
+# дебаунс: склейка нескольких быстрых сообщений в ОДИН ответ (экономия токенов + живость)
+_DEBOUNCE_SECONDS = 2.5
+_MSG_BUFFER: dict[int, dict] = {}
 
 _KEY_SETUP_FLOWS: dict[str, dict] = {
     "yandex": {
@@ -91,6 +97,8 @@ _KEY_SETUP_FLOWS: dict[str, dict] = {
 
 _PENDING_KEY: dict[int, dict] = {}
 _PENDING_KEY_TTL = 600
+# провайдеры, которые юзер пропустил в текущей сессии (чтоб не предлагать снова)
+_G4F_SKIPPED: dict[int, set[str]] = {}
 
 _G4F_PROVIDER_INFO: dict[str, dict] = {
     "OpenRouter":      {"url": "https://openrouter.ai/keys",              "hint": "sk-or-…",  "free": True},
@@ -193,19 +201,68 @@ async def _build_keys_menu(header: str = "") -> tuple[str, InlineKeyboardMarkup]
     ])
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=rows)
 
-async def _send_g4f_setup_prompt(msg: Message, err_txt: str) -> None:
-    m = re.search(r"<!G4F_AUTH_NEEDED:([^!]*)!>", err_txt)
-    needy = [n for n in (m.group(1).split("|") if m else []) if n]
+_G4F_RECOMMENDED = ["OpenRouter", "Groq", "Cerebras", "HuggingFace", "Gemini", "Airforce"]
 
-    header_lines = ["😥 Все бесплатные g4f-бэкенды сегодня в дауне (502/429/cookies)."]
+def _parse_g4f_needy(err_txt: str) -> list[str]:
+    m = re.search(r"<!G4F_AUTH_NEEDED:([^!]*)!>", err_txt or "")
+    return [n for n in (m.group(1).split("|") if m else []) if n]
+
+async def _pick_g4f_provider(user_id: int, needy: list[str]) -> str | None:
+    """Выбрать ОДНОГО провайдера, у которого ещё нет ключа и которого не пропустили."""
+    saved = await _saved_key_set()
+    skipped = _G4F_SKIPPED.get(user_id, set())
+    order: list[str] = []
+    for group in (needy, _G4F_RECOMMENDED, list(_G4F_PROVIDER_INFO.keys())):
+        for n in group:
+            if n not in order:
+                order.append(n)
+    for n in order:
+        if n not in _G4F_PROVIDER_INFO:
+            continue
+        if f"G4F_KEY_{n.upper()}" in saved or n in skipped:
+            continue
+        return n
+    return None
+
+async def _send_g4f_setup_prompt(msg: Message, err_txt: str,
+                                 user_id: int | None = None) -> None:
+    uid = user_id if user_id is not None else (msg.from_user.id if msg.from_user else 0)
+    needy = _parse_g4f_needy(err_txt)
+    name = await _pick_g4f_provider(uid, needy)
+
+    # предлагать больше некого — сбрасываем skip и показываем общий список / встроенные
+    if not name:
+        _G4F_SKIPPED.pop(uid, None)
+        text, kb = await _build_keys_menu(
+            header=("😥 Ок, ключи пропустили. Можешь подключить встроенный "
+                    "<b>🇷🇺 Yandex</b> или <b>🌸 Gemini</b> — или вот весь список:")
+        )
+        await msg.answer(text, reply_markup=kb, disable_web_page_preview=True)
+        return
+
+    info = _G4F_PROVIDER_INFO.get(name) or {"url": "https://openrouter.ai/keys",
+                                            "hint": "api key", "free": None}
+    url = info.get("url") or "https://openrouter.ai/keys"
+    free_note = ("бесплатно" if info.get("free") is True
+                 else "платно" if info.get("free") is False else "")
+    head = "😥 Бесплатные g4f-бэкенды сей��ас недоступны — одному нужен ключ."
     if needy:
-        pretty = ", ".join(sorted(set(needy))[:8])
-        header_lines.append(f"🔐 Просят авторизацию сейчас: <i>{pretty}</i>")
-    header_lines.append("Быстрее всего — <b>🆓 OpenRouter</b> или встроенный <b>🇷🇺 Yandex</b>.")
-    header = "\n".join(header_lines)
-
-    text, kb = await _build_keys_menu(header=header)
-    await msg.answer(text, reply_markup=kb, disable_web_page_preview=True)
+        head += f"\n🔐 Просят вход: <i>{', '.join(sorted(set(needy))[:6])}</i>"
+    text = (
+        f"{head}\n\n"
+        f"<b>🔑 {name}</b>" + (f" — <i>{free_note}</i>" if free_note else "") + "\n"
+        f"1. Зарегайся: <a href='{url}'>{url}</a>\n"
+        f"2. Скопируй ключ (<code>{info.get('hint', 'api key')}</code>) и пришли следующим сообщением.\n\n"
+        f"Не хочешь — жми «Пропустить», предложу другого."
+    )
+    rows = [
+        [InlineKeyboardButton(text="🔑 Ввести ключ", callback_data=f"g4fkey:{name}")],
+        [InlineKeyboardButton(text="⏭ Пропустить", callback_data=f"g4fskip:{name}"),
+         InlineKeyboardButton(text="🌐 Сайт", url=url)],
+        [InlineKeyboardButton(text="📋 Все ключи", callback_data="keysetup:menu")],
+    ]
+    await msg.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=rows),
+                     disable_web_page_preview=True)
 
 @router.callback_query(F.data.startswith("keysetup:"))
 async def cb_keysetup(cb: CallbackQuery):
@@ -294,6 +351,18 @@ async def cb_g4fkey(cb: CallbackQuery):
     await cb.message.answer(text, reply_markup=kb, disable_web_page_preview=True)
     await cb.answer(f"Жду ключ для {name}")
 
+@router.callback_query(F.data.startswith("g4fskip:"))
+async def cb_g4fskip(cb: CallbackQuery):
+    name = cb.data.split(":", 1)[1]
+    _G4F_SKIPPED.setdefault(cb.from_user.id, set()).add(name)
+    try:
+        await cb.message.edit_reply_markup(reply_markup=None)
+    except Exception:
+        pass
+    await cb.answer("Ок, пропустила")
+    # предложить следующего (или общий список, если больше некого)
+    await _send_g4f_setup_prompt(cb.message, "", user_id=cb.from_user.id)
+
 TOOL_CACHE: dict[str, tuple[str, dict, float]] = {}
 _TOOL_CACHE_TTL = 3600
 
@@ -310,6 +379,7 @@ TOOL_ICONS = {
     "lib_download":    "⬇️",
     "memory_save":     "🧠",
     "image_vision":    "👁️",
+    "weather":         "🌦️",
     "request_api_key": "🔐",
 }
 
@@ -446,6 +516,23 @@ async def any_message(msg: Message):
                 await msg.delete()
             except Exception:
                 pass
+            # g4f-ключ: сбрасываем dead-пометки и говорим юзеру повторить запрос
+            if key_name.startswith("G4F_KEY_"):
+                prov_up = key_name[len("G4F_KEY_"):]
+                real = next((n for n in _G4F_PROVIDER_INFO if n.upper() == prov_up), prov_up)
+                _G4F_SKIPPED.pop(msg.from_user.id, None)
+                try:
+                    reset = getattr(getattr(_core, "provider", None), "reset_provider_auth", None)
+                    if reset:
+                        reset(real)
+                except Exception:
+                    log.exception("reset_provider_auth failed")
+                await msg.answer(
+                    f"✅ Сохранила ключ для <b>{real}</b> — g4f будет юзать его. "
+                    "Напиши сообщение ещё раз, и я отвечу через него 🌸"
+                )
+                log.info(f"🔐 g4f-ключ сохранён: {key_name} → provider={real}")
+                return
             text, kb = await _build_keys_menu(
                 header=(
                     f"✅ Сохранила <code>{key_name}</code> для <b>{display}</b>.\n"
@@ -456,31 +543,106 @@ async def any_message(msg: Message):
             log.info(f"🔐 pending-ключ сохранён: {key_name} → provider={pid}")
             return
 
-    async with SessionLocal() as s:
-        user = await repo.upsert_user(s, msg.from_user.id, msg.from_user.username,
-                                      msg.from_user.first_name)
-        images: list[bytes] = []
-        if msg.photo:
+    # === дебаунс/склейка спама: несколько быстрых сообщений -> один ответ ===
+    images: list[bytes] = []
+    if msg.photo:
+        try:
             largest = msg.photo[-1]
             file = await msg.bot.get_file(largest.file_id)
             buf = await msg.bot.download_file(file.file_path)
             images.append(buf.read())
-        text = msg.text or msg.caption or ("[картинка]" if images else "")
+        except Exception:
+            log.exception("не смогла скачать картинку")
+    text = msg.text or msg.caption or ("[картинка]" if images else "")
+    if not text and not images:
+        return
+
+    await _buffer_and_schedule(msg, text, images)
+
+
+async def _buffer_and_schedule(msg: Message, text: str, images: list[bytes]) -> None:
+    """Копим быстрые сообщения пользователя и отвечаем на них ОДНИМ разом."""
+    tg_id = msg.from_user.id
+    buf = _MSG_BUFFER.get(tg_id)
+    if buf is None:
+        buf = {"texts": [], "images": [], "task": None, "msg": msg}
+        _MSG_BUFFER[tg_id] = buf
+    buf["msg"] = msg  # отвечаем на последнее сообщение в пачке
+    if text:
+        buf["texts"].append(text)
+    if images:
+        buf["images"].extend(images)
+    old = buf.get("task")
+    if old and not old.done():
+        old.cancel()  # пришло новое сообщение - сбрасываем таймер
+    buf["task"] = asyncio.create_task(_flush_after_delay(tg_id))
+
+
+async def _flush_after_delay(tg_id: int) -> None:
+    try:
+        await asyncio.sleep(_DEBOUNCE_SECONDS)
+    except asyncio.CancelledError:
+        return
+    buf = _MSG_BUFFER.pop(tg_id, None)
+    if not buf:
+        return
+    texts = [t for t in buf["texts"] if t]
+    combined = "\n".join(texts).strip()
+    images = buf["images"] or None
+    last_msg = buf["msg"]
+    if not combined and not images:
+        return
+    if len(texts) > 1:
+        log.info(f"🧵 склеила {len(texts)} сообщений в один ответ (tg_id={tg_id})")
+    try:
+        await _run_chat(last_msg, combined, images)
+    except Exception:
+        log.exception("_run_chat упал")
+
+
+async def _run_chat(msg: Message, text: str, images: list[bytes] | None) -> None:
+    """Единая обработка (склеенного) сообщения: интенты, LLM, ответ."""
+    cur_mood = None
+    answer = ""
+    tools_used = []
+    attachments = None
+    async with SessionLocal() as s:
+        user = await repo.upsert_user(s, msg.from_user.id, msg.from_user.username,
+                                      msg.from_user.first_name)
+        # текущее настроение — влияет на реакции, скорость и стикеры
+        try:
+            _ms = await repo.get_mood(s, user.id)
+            cur_mood = getattr(_ms, "mood", None)
+        except Exception:
+            cur_mood = None
+        # иногда ставит эмодзи-реакцию на входящее сообщение (перед ответом)
+        try:
+            await maybe_react(msg, cur_mood)
+        except Exception:
+            pass
+
+        if not text and images:
+            text = "[картинка]"
         if not text and not images:
             return
 
         if not images and text:
             intent = lib_download.detect_download_intent(text)
             if intent:
-                kind, query = intent
-                if not query or len(query) < 2:
-                    prev = lib_download._LAST_QUERY.get(user.id)
-                    if prev:
-                        kind, query = prev
-                if query and len(query) >= 2:
+                target = await lib_download.resolve_download_target(s, user.id, text, intent)
+                if target:
+                    kind, query = target
                     await repo.add_message(s, user.id, "user", text)
                     await lib_download.start_download_flow(msg, user.id, kind, query)
                     return
+
+            # после 'не нашла, напиши точнее' — следующее название сразу запускает скачивание (без LLM)
+            follow = await lib_download.maybe_followup_download(s, user.id, text)
+            if follow:
+                kind, query = follow
+                await repo.add_message(s, user.id, "user", text)
+                await lib_download.start_download_flow(msg, user.id, kind, query)
+                return
 
             rintent = steam_flow.detect_review_intent(text)
             if rintent:
@@ -506,12 +668,14 @@ async def any_message(msg: Message):
             log.exception("core error")
             err_txt = str(e)
             if "g4f:" in err_txt or "не нашла ни одного рабочего бэкенда" in err_txt:
-                await _send_g4f_setup_prompt(msg, err_txt)
+                await _send_g4f_setup_prompt(msg, err_txt, user_id=msg.from_user.id)
             else:
                 await msg.answer("Ой, меня немного закоротило \U0001f605 Попробуй ещё раз?")
             return
 
-    kb = _tools_keyboard(tools_used) if settings.SHOW_TOOL_CALLS else None
-    await msg.answer(answer, reply_markup=kb, disable_web_page_preview=False)
+    kb = _tools_keyboard(tools_used) if (settings.SHOW_TOOL_CALLS and tools_used) else None
+    # отвечает «по-живому»: паузы, «печатает…», опечатки, стикеры, скорость по настроению
+    await send_humanlike(msg, answer, reply_markup=kb,
+                         disable_web_page_preview=False, mood=cur_mood)
     if attachments:
         await _send_attachments(msg, attachments)

@@ -38,7 +38,7 @@
 ### 1. Скачай проект
 
 ```bash
-git clone https://github.com/elytrya/mahiru-ai && cd mahiru-ai
+git clone <свой репо> mahiru && cd mahiru
 # или распакуй mahiru.zip
 ```
 

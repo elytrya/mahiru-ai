@@ -10,7 +10,7 @@ from db.session import SessionLocal
 from db import repo
 from db.models import Memory, Message, User
 from memory.storage import clear as memory_clear
-from utils.settings_kv import get_key
+from utils.settings_kv import get_key, set_behavior
 
 router = Router(name="callbacks")
 
@@ -40,6 +40,7 @@ MANAGED_KEYS = [
     ("YANDEX_PROMPT_ID","Yandex AI Studio prompt id (опц)"),
     ("LIB_TOKEN",       "MangaLib/RanobeLib/HentaiLib токен (общий)"),
     ("STEAM_API_KEY",   "Steam Web API (опционально)"),
+    ("OPENWEATHER_API_KEY", "OpenWeather (погода-забота)"),
 ]
 
 def back_btn() -> InlineKeyboardMarkup:
@@ -175,6 +176,10 @@ async def admin_cb(cb: CallbackQuery):
                 reply_markup=back_btn(),
             )
 
+        elif action == "human":
+            text, kb = render_human_panel()
+            await cb.message.edit_text(text, reply_markup=kb)
+
         elif action == "clear":
             kb = [
                 [InlineKeyboardButton(text="🗑 Подтвердить", callback_data="clear:yes")],
@@ -197,6 +202,97 @@ async def admin_cb(cb: CallbackQuery):
             )
 
     await cb.answer()
+
+# =====================================================================
+#  Панель очеловечивания (🎭 Человечность)
+# =====================================================================
+HUMAN_BOOL_FIELDS = [
+    ("NO_EMDASH",           "Заменять тире на -"),
+    ("HUMAN_TYPING",        "Имитация набора"),
+    ("SPLIT_MESSAGES",      "Ответ неск. сообщениями"),
+    ("TYPING_INDICATOR",    "Индикатор «печатает…»"),
+    ("SHOW_TOOL_CALLS",     "Кнопки тулов"),
+    ("REACTIONS_ENABLED",   "Эмодзи-реакции"),
+    ("TYPO_ENABLED",        "Опечатки + самоисправление"),
+    ("MOOD_SPEED_ENABLED",  "Настроение влияет на скорость"),
+    ("READ_SILENCE_ENABLED","«Прочитала, молчит»"),
+    ("STICKERS_ENABLED",    "Стикеры/кастом-эмодзи"),
+    ("DATES_ENABLED",       "Памятные даты (поздравляет)"),
+    ("JEALOUSY_ENABLED",    "Ревность/обидки (если долго молчал)"),
+    ("ENERGY_ENABLED",      "Энергия/батарейка (к ночи устаёт)"),
+    ("CLOSENESS_ENABLED",   "Уровень близости"),
+    ("PETNAMES_ENABLED",    "Клички/пет-неймы"),
+    ("WEATHER_ENABLED",     "Погода-забота (OpenWeather)"),
+]
+TYPING_SPEED_PRESETS = [8.0, 14.0, 20.0, 30.0]
+IGNORE_CHANCE_PRESETS = [0.0, 0.12, 0.25, 0.4]
+
+def _flag(field: str) -> str:
+    return "✅" if getattr(settings, field, False) else "❌"
+
+def render_human_panel() -> tuple[str, InlineKeyboardMarkup]:
+    text = (
+        "<b>🎭 Человечность / очеловечивание</b>\n\n"
+        "Как живая: думает перед ответом, «печатает…», иногда отвечает не сразу.\n\n"
+        f"Тире «—» -> «-»: {_flag('NO_EMDASH')}\n"
+        f"Имитация набора: {_flag('HUMAN_TYPING')}\n"
+        f"Скорость набора: <b>{settings.TYPING_SPEED_CPS:g}</b> симв/сек\n"
+        f"Разбивка на сообщения: {_flag('SPLIT_MESSAGES')} (макс {settings.SPLIT_MAX})\n"
+        f"Пауза «заметила»: {settings.READ_DELAY_MIN:g}-{settings.READ_DELAY_MAX:g} сек\n"
+        f"Шанс «занята»: <b>{int(settings.IGNORE_CHANCE * 100)}%</b> "
+        f"({settings.IGNORE_MIN_SECONDS:g}-{settings.IGNORE_MAX_SECONDS:g} сек)\n\n"
+        "Стикеры: <code>/sticker</code> · Даты: <code>/date</code>\n"
+        "Погода: <code>/weather</code> · Пет-нейм: <code>/petname</code>\n"
+        "Тонкая настройка: <code>/humanset ПОЛЕ ЗНАЧЕНИЕ</code>"
+    )
+    rows = [[InlineKeyboardButton(text=f"{_flag(f)} {label}",
+                                  callback_data=f"hum:t:{f}")]
+            for f, label in HUMAN_BOOL_FIELDS]
+    rows.append([
+        InlineKeyboardButton(text=f"⌨️ Скорость: {settings.TYPING_SPEED_CPS:g}",
+                             callback_data="hum:c:TYPING_SPEED_CPS"),
+        InlineKeyboardButton(text=f"🙈 Занята: {int(settings.IGNORE_CHANCE * 100)}%",
+                             callback_data="hum:c:IGNORE_CHANCE"),
+    ])
+    rows.append([InlineKeyboardButton(text="« Назад", callback_data="adm:home")])
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _next_preset(presets: list[float], cur: float) -> float:
+    # берём ближайший пресет и переходим к следующему по кругу
+    try:
+        idx = min(range(len(presets)), key=lambda i: abs(presets[i] - cur))
+    except ValueError:
+        return cur
+    return presets[(idx + 1) % len(presets)]
+
+
+@router.callback_query(F.data.startswith("hum:"))
+async def human_cb(cb: CallbackQuery):
+    if not _is_admin(cb.from_user.id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    _, op, field = cb.data.split(":", 2)
+    if op == "t":
+        cur = bool(getattr(settings, field, False))
+        await set_behavior(field, not cur)
+    elif op == "c":
+        if field == "TYPING_SPEED_CPS":
+            presets = TYPING_SPEED_PRESETS
+        elif field == "IGNORE_CHANCE":
+            presets = IGNORE_CHANCE_PRESETS
+        else:
+            presets = []
+        if presets:
+            cur = float(getattr(settings, field, presets[0]))
+            await set_behavior(field, _next_preset(presets, cur))
+    text, kb = render_human_panel()
+    try:
+        await cb.message.edit_text(text, reply_markup=kb)
+    except Exception:
+        pass
+    await cb.answer("Сохранено ✅")
+
 
 @router.callback_query(F.data == "pers:reset:yes")
 async def do_reset_personality(cb: CallbackQuery):

@@ -52,10 +52,21 @@ async def delete_key(name: str, session: AsyncSession | None = None) -> None:
         except Exception:
             pass
 
+# из БД подгружаем ТОЛЬКО секреты/ключи. Модель/провайдер/хост берём из config.py/.env,
+# иначе старое значение в БД навечно перебивало бы настройки из файла.
+_SECRET_SUFFIXES = ("_API_KEY", "_KEY", "_TOKEN", "_SECRET")
+_SECRET_EXTRA = {"YANDEX_FOLDER", "YANDEX_PROMPT_ID", "G4F_PROVIDER"}
+
+def _is_secret_field(field: str) -> bool:
+    up = field.upper()
+    return up.endswith(_SECRET_SUFFIXES) or up in _SECRET_EXTRA
+
 async def load_overrides() -> int:
     n = 0
     async with SessionLocal() as s:
         for field in list(settings.__class__.model_fields.keys()):
+            if not _is_secret_field(field):
+                continue
             v = await repo.get_setting(s, _kv_key(field))
             if v:
                 try:
@@ -63,4 +74,119 @@ async def load_overrides() -> int:
                     n += 1
                 except Exception:
                     pass
+    return n
+
+# =====================================================================
+#  ПОВЕДЕНЧЕСКИЕ (не-секретные) настройки очеловечивания.
+#  Хранятся в БД (ключ beh:*), чтобы /admin и /humanset меняли их на лету
+#  и они переживали перезапуск. .env/config — значения по умолчанию.
+# =====================================================================
+
+# поля, которые можно менять через /humanset и кнопки /admin
+BEHAVIOR_FIELDS = (
+    "NO_EMDASH",
+    "HUMAN_TYPING",
+    "TYPING_SPEED_CPS",
+    "TYPING_MIN_SECONDS",
+    "TYPING_MAX_SECONDS",
+    "READ_DELAY_MIN",
+    "READ_DELAY_MAX",
+    "IGNORE_CHANCE",
+    "IGNORE_MIN_SECONDS",
+    "IGNORE_MAX_SECONDS",
+    "SPLIT_MESSAGES",
+    "SPLIT_MAX",
+    "TYPING_INDICATOR",
+    "SHOW_TOOL_CALLS",
+    # реакции-эмодзи
+    "REACTIONS_ENABLED",
+    "REACTION_CHANCE",
+    # опечатки с самоисправлением
+    "TYPO_ENABLED",
+    "TYPO_CHANCE",
+    # настроение влияет на скорость
+    "MOOD_SPEED_ENABLED",
+    # «прочитала, но не ответила»
+    "READ_SILENCE_ENABLED",
+    "READ_SILENCE_CHANCE",
+    "READ_SILENCE_MIN_SECONDS",
+    "READ_SILENCE_MAX_SECONDS",
+    # стикеры / кастом-эмодзи
+    "STICKERS_ENABLED",
+    "STICKER_CHANCE",
+    # памятные даты
+    "DATES_ENABLED",
+    "DATES_GREET_HOUR",
+    # ревность/обидки
+    "JEALOUSY_ENABLED",
+    "JEALOUSY_HOURS",
+    # энергия/батарейка
+    "ENERGY_ENABLED",
+    # уровень близости
+    "CLOSENESS_ENABLED",
+    "CLOSENESS_PER_MSG",
+    # клички/пет-неймы
+    "PETNAMES_ENABLED",
+    "PETNAME_THRESHOLD",
+    # погода-забота
+    "WEATHER_ENABLED",
+    "WEATHER_CITY",
+    "WEATHER_CARE_HOUR",
+    "WEATHER_UNITS",
+    "WEATHER_LANG",
+)
+
+_TRUE_WORDS = ("1", "true", "yes", "on", "да", "+", "вкл", "y")
+
+def _beh_key(name: str) -> str:
+    return "beh:" + name.strip().upper()
+
+def _coerce(field: str, raw):
+    """Приводит строку из БД/команды к типу текущего значения в settings."""
+    cur = getattr(settings, field, None)
+    s = str(raw).strip()
+    if isinstance(cur, bool):
+        return s.lower() in _TRUE_WORDS
+    if isinstance(cur, int) and not isinstance(cur, bool):
+        return int(float(s.replace(",", ".")))
+    if isinstance(cur, float):
+        return float(s.replace(",", "."))
+    return s
+
+def apply_behavior(field: str, raw) -> None:
+    up = field.strip().upper()
+    if not hasattr(settings, up):
+        return
+    try:
+        setattr(settings, up, _coerce(up, raw))
+    except Exception:
+        pass
+
+async def set_behavior(name: str, value,
+                       session: AsyncSession | None = None) -> None:
+    up = name.strip().upper()
+    val = "true" if value is True else "false" if value is False else str(value)
+    if session is not None:
+        await repo.set_setting(session, _beh_key(up), val)
+    else:
+        async with SessionLocal() as s:
+            await repo.set_setting(s, _beh_key(up), val)
+    apply_behavior(up, val)
+
+async def get_behavior(name: str,
+                       session: AsyncSession | None = None) -> str | None:
+    up = name.strip().upper()
+    if session is not None:
+        return await repo.get_setting(session, _beh_key(up))
+    async with SessionLocal() as s:
+        return await repo.get_setting(s, _beh_key(up))
+
+async def load_behavior_overrides() -> int:
+    n = 0
+    async with SessionLocal() as s:
+        for field in BEHAVIOR_FIELDS:
+            v = await repo.get_setting(s, _beh_key(field))
+            if v is not None and v != "":
+                apply_behavior(field, v)
+                n += 1
     return n
