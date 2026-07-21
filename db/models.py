@@ -1,3 +1,4 @@
+"""орм модели SQLAlchemy (пользователь, память, настроение, история и др.)."""
 from __future__ import annotations
 import datetime as dt
 from sqlalchemy import String, Integer, Text, DateTime, ForeignKey, Float, JSON
@@ -15,7 +16,6 @@ class User(Base):
     lang: Mapped[str] = mapped_column(String(8), default="ru")
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
     last_seen: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
-    # уровень близости (копится со временем/общением) и ласковое прозвище
     closeness: Mapped[int] = mapped_column(Integer, default=0)
     pet_name: Mapped[str | None] = mapped_column(String(64))
 
@@ -110,7 +110,7 @@ class ImportantDate(Base):
     month: Mapped[int] = mapped_column(Integer)
     day: Mapped[int] = mapped_column(Integer)
     year: Mapped[int | None] = mapped_column(Integer)
-    kind: Mapped[str] = mapped_column(String(32), default="custom")  # birthday / anniversary / custom
+    kind: Mapped[str] = mapped_column(String(32), default="custom")
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
 class Task(Base):

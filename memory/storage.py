@@ -1,3 +1,4 @@
+"""Хранение и выборка воспоминаний в БД."""
 from __future__ import annotations
 import re
 from sqlalchemy import select, func

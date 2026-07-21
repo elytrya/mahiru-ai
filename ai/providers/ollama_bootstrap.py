@@ -28,16 +28,16 @@ from utils.logger import log
 
 try:
     from config import settings
-except Exception:  # на всякий случай, чтоб модуль не ломался при импорте
-    settings = None  # type: ignore
+except Exception:
+    settings = None
 
 _WIN_INSTALLER_URL = "https://ollama.com/download/OllamaSetup.exe"
 _MAC_ZIP_URL = "https://ollama.com/download/Ollama-darwin.zip"
 _LINUX_INSTALL_SH = "https://ollama.com/install.sh"
 
 _lock = asyncio.Lock()
-_ready: set[tuple[str, str]] = set()   # (host, model) уже готовы
-_server_ok: set[str] = set()           # host, на котором сервер точно поднят
+_ready: set[tuple[str, str]] = set()
+_server_ok: set[str] = set()
 
 
 def _opt(name: str, default: bool = True) -> bool:
@@ -62,7 +62,6 @@ def invalidate(host: str, model: str | None = None) -> None:
         _ready.discard((host, model))
 
 
-# ---------------------------------------------------------------- сеть ----
 async def _server_alive(host: str, timeout: float = 2.0) -> bool:
     try:
         async with httpx.AsyncClient(timeout=timeout) as c:
@@ -81,13 +80,12 @@ async def _model_present(host: str, model: str) -> bool:
     except Exception:
         return False
     names = {m.get("name", "") for m in (data.get("models") or [])}
-    names |= {n.split(":", 1)[0] for n in names}   # без тега
+    names |= {n.split(":", 1)[0] for n in names}
     want = model
     want_base = model.split(":", 1)[0]
     return want in names or want_base in names or f"{want_base}:latest" in names
 
 
-# ---------------------------------------------------- поиск бинарника ----
 def _find_binary() -> str | None:
     exe = shutil.which("ollama")
     if exe:
@@ -116,7 +114,6 @@ def _find_binary() -> str | None:
     return None
 
 
-# ------------------------------------------------------------- установка ----
 def _download(url: str, dest: Path) -> None:
     log.info(f"⬇️  скачиваю {url}")
     req = urllib.request.Request(url, headers={"User-Agent": "Mahiru-bot"})
@@ -131,7 +128,6 @@ def _install_windows() -> str | None:
     except Exception:
         log.exception("не смогла скачать установщик Ollama")
         return None
-    # Inno Setup: тихая установка без окон
     log.info("⚙️  ставлю Ollama (тихо)…")
     for args in (
         ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"],
@@ -149,7 +145,6 @@ def _install_windows() -> str | None:
 
 
 def _install_macos() -> str | None:
-    # сначала brew, если есть
     if shutil.which("brew"):
         try:
             log.info("⚙️  ставлю Ollama через brew…")
@@ -159,7 +154,6 @@ def _install_macos() -> str | None:
                 return b
         except Exception:
             pass
-    # иначе качаем .zip и кладём Ollama.app в /Applications
     tmp = Path(tempfile.gettempdir()) / "Ollama-darwin.zip"
     try:
         _download(_MAC_ZIP_URL, tmp)
@@ -201,11 +195,9 @@ def _start_server(exe: str) -> None:
             kwargs["start_new_session"] = True
         subprocess.Popen([exe, "serve"], **kwargs)
     except Exception:
-        # возможно сервер уже запущен (tray-приложение) — это ок
         log.debug("ollama serve не стартовал (вероятно уже работает)")
 
 
-# ------------------------------------------------------------- pull модели ----
 def _fmt_bytes(n: float) -> str:
     for unit in ("Б", "КБ", "МБ", "ГБ", "ТБ"):
         if n < 1024 or unit == "ТБ":
@@ -228,7 +220,7 @@ async def _pull_model(host: str, model: str) -> None:
     last_log_ts = 0.0
     last_completed = 0
     last_speed_ts = 0.0
-    speed = 0.0  # байт/сек
+    speed = 0.0
     cur_digest = ""
 
     async with httpx.AsyncClient(timeout=None) as c:
@@ -251,13 +243,11 @@ async def _pull_model(host: str, model: str) -> None:
                 digest = d.get("digest") or ""
                 now = _time.monotonic()
 
-                # новый слой — сбрасываем счётчик скорости
                 if digest and digest != cur_digest:
                     cur_digest = digest
                     last_completed = 0
                     last_speed_ts = now
 
-                # оценка скорости скачивания
                 if completed and last_speed_ts and now - last_speed_ts >= 0.5:
                     delta = completed - last_completed
                     dt = now - last_speed_ts
@@ -266,10 +256,8 @@ async def _pull_model(host: str, model: str) -> None:
                     last_completed = completed
                     last_speed_ts = now
 
-                # слой с известным размером — рисуем прогресс-бар
                 if total > 0:
                     frac = completed / total
-                    # логаем не чаще раза в секунду (или когда дошли до 100%)
                     if now - last_log_ts >= 1.0 or frac >= 1.0:
                         last_log_ts = now
                         eta = ""
@@ -281,7 +269,6 @@ async def _pull_model(host: str, model: str) -> None:
                             f"   [{_bar(frac)}] {frac * 100:5.1f}%  "
                             f"{_fmt_bytes(completed)} / {_fmt_bytes(total)}{spd}{eta}"
                         )
-                # служебные статусы без размера (manifest, verifying, и т.д.)
                 elif status and status != last_status:
                     log.info(f"   ollama pull: {status}")
 
@@ -290,7 +277,6 @@ async def _pull_model(host: str, model: str) -> None:
     log.info(f"✅ модель {model} скачана и готова")
 
 
-# ---------------------------------------------------------------- главное ----
 async def _ensure_server(host: str) -> None:
     if host in _server_ok and await _server_alive(host):
         return
@@ -316,7 +302,7 @@ async def _ensure_server(host: str) -> None:
     if _opt("OLLAMA_AUTO_START"):
         await asyncio.to_thread(_start_server, exe)
 
-    for _ in range(90):  # до ~90 секунд на подъём
+    for _ in range(90):
         if await _server_alive(host):
             _server_ok.add(host)
             log.info("✅ Ollama сервер поднят")

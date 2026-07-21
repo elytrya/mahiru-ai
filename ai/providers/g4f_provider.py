@@ -1,3 +1,4 @@
+"""Провайдер на базе g4f (бесплатный доступ к моделям)."""
 from __future__ import annotations
 import asyncio
 import base64
@@ -23,11 +24,8 @@ _FREE_CANDIDATES = [
     "Yqcloud",
 ]
 
-# провайдеры, для которых имеет смысл хранить пользовательский ключ (G4F_KEY_*)
 _KEYABLE_PROVIDERS = _NEEDS_AUTH | {"HuggingChat", "Airforce", "ApiAirforce", "WeWordle"}
 
-# Свапнули приоритет: сначала deepseek/qwen/llama, gpt-4o-* уехали вниз (остались как fallback).
-# gpt-4o-mini держим вторым — он стабильнее всего тянет function-calling на бесплатных бэкендах.
 _MODEL_FALLBACKS = [
     "deepseek-v3", "deepseek-r1", "deepseek-chat",
     "gpt-4o-mini",
@@ -100,8 +98,6 @@ _RACE_WIDTH          = 4
 _RACE_TIMEOUT        = 18.0
 _SHRINK_TARGET_CHARS = 6000
 
-# Строки-маркеры: провайдер вернул ОШИБКУ в виде "успешного" ответа
-# (напр. ApiAirforce: 'The model does not exist in discord.gg/airforce').
 _ERROR_CONTENT_MARKERS = (
     "the model does not exist",
     "discord.gg/airforce",
@@ -146,7 +142,6 @@ def _looks_like_error_content(text: str) -> bool:
     low = (text or "").strip().lower()
     if not low:
         return False
-    # длинный осмысленный ответ вряд ли целиком — ошибка
     if len(low) > 600:
         return False
     return any(m in low for m in _ERROR_CONTENT_MARKERS)
@@ -319,7 +314,6 @@ class G4FProvider(BaseProvider):
         self._dead_providers: set[str] = set()
         self._shrunk_pairs: set[tuple[str, str]] = set()
         self._auth_needed: dict[str, str] = {}
-        # провайдеры, для которых у нас есть сохранённый ключ — их можно юзать даже из _NEEDS_AUTH
         self._authed_providers: set[str] = set()
         self._authed_loaded: bool = False
 
@@ -363,7 +357,6 @@ class G4FProvider(BaseProvider):
                 plan.append(("auto", None))
                 seen.add("auto")
                 return
-            # провайдер требует авторизацию — пускаем только если у нас есть его ключ
             if name in _NEEDS_AUTH and name not in self._authed_providers:
                 return
             if name in self._dead_providers:
@@ -377,7 +370,6 @@ class G4FProvider(BaseProvider):
         if self._last_ok:
             _add(self._last_ok[0])
         _add(self.forced_provider_name)
-        # сначала провайдеры с пользовательским ключом (они стабильнее бесплатных)
         for n in sorted(self._authed_providers):
             _add(n)
         for n in _FREE_CANDIDATES:

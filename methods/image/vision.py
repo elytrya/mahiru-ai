@@ -1,3 +1,4 @@
+"""Инструмент: анализ присланного изображения (vision)."""
 from __future__ import annotations
 from methods.base import Tool
 

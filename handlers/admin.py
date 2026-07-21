@@ -1,3 +1,4 @@
+"""Админ-команды и настройка поведения бота (/admin и т.п.)."""
 from __future__ import annotations
 from aiogram import Router
 from aiogram.filters import Command
@@ -91,7 +92,6 @@ async def weather_cmd(msg: Message):
         await msg.answer("Ок, ключ OpenWeather сохранён ✅")
         return
     if sub in ("window", "окно", "hours") and arg:
-        # окно случайного времени: "8 22" или "8-22"
         nums = [x for x in arg.replace("-", " ").split() if x.strip().isdigit()]
         if len(nums) >= 2:
             lo, hi = int(nums[0]), int(nums[1])
@@ -115,7 +115,6 @@ async def weather_cmd(msg: Message):
         await msg.answer("Сейчас: " + format_weather(w))
         return
 
-    # без аргументов - показать настройки и текущую погоду
     enabled = "да" if getattr(settings, "WEATHER_ENABLED", True) else "нет"
     city = getattr(settings, "WEATHER_CITY", "") or "(не задан)"
     lo = getattr(settings, "WEATHER_MIN_HOUR", 8)

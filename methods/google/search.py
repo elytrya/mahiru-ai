@@ -1,3 +1,4 @@
+"""Инструмент: поиск в Google (Custom Search)."""
 from __future__ import annotations
 import httpx
 

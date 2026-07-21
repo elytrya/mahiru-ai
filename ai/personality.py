@@ -1,3 +1,4 @@
+"""Доступ к личности махиру в БД (чтение и обновление полей характера)."""
 from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncSession
 from db import repo

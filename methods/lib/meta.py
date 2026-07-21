@@ -1,3 +1,4 @@
+"""Получение метаданных тайтла из *Lib."""
 from __future__ import annotations
 from typing import Any
 

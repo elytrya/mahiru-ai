@@ -1,3 +1,4 @@
+"""Автономные действия Mahiru по расписанию (инициатива, смена настроения и т.д.)."""
 from __future__ import annotations
 import random
 import datetime as dt
@@ -11,7 +12,8 @@ from db.session import SessionLocal
 from db import repo
 from db.models import User
 from sqlalchemy import select
-from ai.prompts import build_autonomous_prompt, build_date_greeting_prompt, build_weather_care_prompt
+from ai.prompts import (build_autonomous_prompt, build_date_greeting_prompt,
+                        build_weather_care_prompt, build_life_event_prompt)
 from ai.providers.base import ChatMessage
 from utils.weather import get_weather
 from ai.providers.factory import build_provider
@@ -25,7 +27,7 @@ class AutonomousScheduler:
         self.provider = build_provider()
 
     def start(self) -> None:
-        self.scheduler.add_job(self._tick, IntervalTrigger(minutes=60))  # раз в час тыкаем
+        self.scheduler.add_job(self._tick, IntervalTrigger(minutes=60))
         self.scheduler.start()
         log.info("Autonomous scheduler started")
 
@@ -38,20 +40,23 @@ class AutonomousScheduler:
     async def _tick(self) -> None:
         now = dt.datetime.now()
 
-        # памятные даты — проверяем раз в день в заданный час (поздравляет сама)
         if getattr(settings, "DATES_ENABLED", True) and now.hour == int(getattr(settings, "DATES_GREET_HOUR", 10)):
             try:
                 await self._greet_dates(now)
             except Exception:
                 log.exception("date greeting tick failed")
 
-        # погода-забота - раз в день в СЛУЧАЙНОЕ время («там у тебя дождь, возьми зонт»)
-        # час не фиксирован - сам выбирается внутри _greet_weather, поэтому тыкаем каждый тик
         if getattr(settings, "WEATHER_ENABLED", True):
             try:
                 await self._greet_weather(now)
             except Exception:
                 log.exception("weather care tick failed")
+
+        if getattr(settings, "LIFE_FEED_ENABLED", True):
+            try:
+                await self._make_life_event(now)
+            except Exception:
+                log.exception("life event tick failed")
 
         if not (settings.AUTONOMOUS_TIME_START <= now.hour < settings.AUTONOMOUS_TIME_END):
             return
@@ -69,7 +74,6 @@ class AutonomousScheduler:
                 async with SessionLocal() as s:
                     mems = await repo.top_memories(s, u.id, limit=10)
                     recent = await repo.recent_messages(s, u.id, limit=20)
-                # инициатива: сама вспоминает недавние темы разговора
                 recent_topics = [
                     (m.content or "").strip()[:80]
                     for m in recent
@@ -114,12 +118,11 @@ class AutonomousScheduler:
 
     async def _greet_weather(self, now: dt.datetime) -> None:
         """Забота про погоду: сама напишет про погоду в городе владельца, раз в день в случайное время."""
-        # ещё не наступил случайный час на сегодня - ждём
         if not await self._weather_due(now):
             return
         w = await get_weather()
         if not w:
-            return  # нет ключа/города или API не ответил
+            return
         today = now.date().isoformat()
         async with SessionLocal() as s:
             personality = await repo.get_personality(s)
@@ -189,3 +192,44 @@ class AutonomousScheduler:
                         await repo.set_setting(s, guard, "1")
             except Exception:
                 log.exception("date greeting failed")
+
+    async def _make_life_event(self, now: dt.datetime) -> None:
+        """Раз в день придумывает себе бытовое событие дня (лента жизни).
+
+        Не отправляется пользователю - хранится в Setting и всплывает в контексте,
+        чтобы Махиру могла невзначай упомянуть свой день в переписке.
+        """
+        if now.hour < int(getattr(settings, "LIFE_FEED_HOUR", 9)):
+            return
+        today = now.date().isoformat()
+        async with SessionLocal() as s:
+            if await repo.get_setting(s, f"life_event_done:{today}"):
+                return
+            personality = await repo.get_personality(s)
+        city = (getattr(settings, "MAHIRU_CITY", "") or "").strip() or "своём городе"
+        wdesc = ""
+        try:
+            w = await get_weather(city if city != "своём городе" else None)
+            if w:
+                wdesc = w.get("desc", "")
+        except Exception:
+            pass
+        try:
+            prompt = build_life_event_prompt(personality, city, wdesc)
+            resp = await self.provider.chat(
+                [ChatMessage("system", prompt),
+                 ChatMessage("user", "Что у тебя сегодня случилось за день?")],
+                temperature=0.95, max_tokens=80,
+            )
+            raw = (resp.text or "").strip()
+            event = dedash(raw.splitlines()[0].strip()) if raw else ""
+            event = event.strip('"').strip("'").strip()
+            if not event:
+                return
+            async with SessionLocal() as s:
+                await repo.set_setting(s, "life_event:text", event)
+                await repo.set_setting(s, "life_event:date", today)
+                await repo.set_setting(s, f"life_event_done:{today}", "1")
+            log.info(f"\U0001f4d4 лента жизни: {event!r}")
+        except Exception:
+            log.exception("life event generate failed")

@@ -1,3 +1,4 @@
+"""Скачивание глав манги/тайтлов и отправка их пользователю."""
 from __future__ import annotations
 import asyncio
 import hashlib
@@ -24,8 +25,6 @@ from utils.logger import log
 router = Router(name="lib_download")
 
 _DL_VERBS = (
-    # \w* чтобы ловить целые словоформы (скачаем/скачаю/качни/сохрани…),
-    # иначе 'скач' отгрызал префикс и в запрос летел мусор ('аем')
     r"(?:скача\w*|скачай\w*|скач|качн\w*|кача\w*|загруз\w*|выкач\w*|"
     r"скин\w*|пришл\w*|присыл\w*|достан\w*|сохран\w*|download)"
 )
@@ -39,12 +38,10 @@ _FILLER = {
     "please", "мне", "ещё", "еще", "эту", "это", "эт", "главы", "главу",
     "всю", "все", "всё", "новую", "давай", "ну", "же", "можешь", "можно",
     "ты", "а", "и", "на", "мне-то",
-    # местоимения — их нельзя искать буквально, это отсылка к предыдущему тайтлу
     "ее", "её", "его", "их", "нее", "неё", "него", "нею", "них",
     "этот", "эта", "эти", "этого", "этой", "тот", "та", "те", "it", "them",
 }
 
-# тайтлы бот/юзер пишут в кавычках — «Ангел по соседству» / "Ангела по соседству"
 _TITLE_QUOTE_RE = re.compile(r'[«"“„]\s*([^«»"“”„\n]{2,60}?)\s*[»"”“]')
 
 def _has_kind_word(text: str) -> bool:
@@ -57,7 +54,7 @@ async def resolve_last_title(session, user_id: int) -> str | None:
         msgs = await repo.recent_messages(session, user_id, limit=12)
     except Exception:
         return None
-    for m in reversed(msgs):  # от новых к старым
+    for m in reversed(msgs):
         found = _TITLE_QUOTE_RE.findall(getattr(m, "content", "") or "")
         if found:
             return found[-1].strip()
@@ -166,7 +163,6 @@ class _DLState:
 _SEARCH: dict[str, _SearchState] = {}
 _DL: dict[str, _DLState] = {}
 _LAST_QUERY: dict[int, tuple[str, str]] = {}
-# когда поиск ничего не нашёл — ждём уточнённое название следующим сообщением
 _AWAIT_TITLE: dict[int, tuple[str, float]] = {}
 _AWAIT_TTL = 600
 
@@ -242,11 +238,11 @@ async def start_download_flow(msg: Message, user_id: int, kind: str, query: str)
     if not isinstance(res, dict) or res.get("error") or not res.get("items"):
         note = (await _flavor(user_id, "notfound")).format(q=query)
         await msg.answer(note)
-        _AWAIT_TITLE[user_id] = (kind, time.time())  # ждём уточнённое название
+        _AWAIT_TITLE[user_id] = (kind, time.time())
         return
 
     items = res["items"]
-    _LAST_QUERY[user_id] = (kind, query)   # запоминаем ТОЛЬКО успешный запрос
+    _LAST_QUERY[user_id] = (kind, query)
     _AWAIT_TITLE.pop(user_id, None)
     sid = _sid("s", user_id)
     _SEARCH[sid] = _SearchState(user_id=user_id, kind=kind, query=query, items=items)

@@ -1,3 +1,4 @@
+"""Фабрика: создаёт нужный провайдер LLM по настройкам."""
 from __future__ import annotations
 from typing import Type
 

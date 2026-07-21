@@ -1,3 +1,4 @@
+"""Инструмент: поиск игр в Steam."""
 from __future__ import annotations
 import re
 import httpx

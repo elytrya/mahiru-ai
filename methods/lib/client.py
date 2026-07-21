@@ -1,3 +1,4 @@
+"""HTTP-клиент к API *Lib с обработкой ошибок и лимитов."""
 from __future__ import annotations
 import asyncio
 import re

@@ -1,3 +1,4 @@
+"""Управление воспоминаниями (добавление и поиск релевантных)."""
 from __future__ import annotations
 import re
 

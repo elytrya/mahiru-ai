@@ -1,3 +1,4 @@
+"""Анализ диалога через LLM для выделения фактов, достойных запоминания."""
 from __future__ import annotations
 import json
 import re

@@ -1,11 +1,13 @@
+"""Модель настроения махиру: расчёт и обновление текущего настроения по времени и общению."""
 from __future__ import annotations
 import random
 import re
+import datetime as dt
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from db import repo
+from config import settings
 
-# все настроения что есть
 MOODS = ["happy", "sad", "tired", "excited", "curious", "annoyed", "playful", "loving"]
 
 _DRIFT_WEIGHTS = {
@@ -14,19 +16,32 @@ _DRIFT_WEIGHTS = {
 }
 
 _NEGATIVE = {"sad", "annoyed", "tired"}
+_WARM = {"loving", "happy", "excited", "playful"}
+
+def _hours_since(ts) -> float:
+    if not ts:
+        return 999.0
+    try:
+        return max(0.0, (dt.datetime.utcnow() - ts).total_seconds() / 3600.0)
+    except Exception:
+        return 999.0
 
 _TRIGGERS: list[tuple[re.Pattern, str, float]] = [
     (re.compile(r"\b(люблю|скучаю|скучал|нежн|милая|красивая|обним|целу|любим)", re.I), "loving", 0.7),
     (re.compile(r"\b(хаха|ахах|лол|ржак|угар|смеш|прикол|шут|хах|😂|🤣)", re.I), "playful", 0.55),
     (re.compile(r"\b(ура|круто|офиген|класс|вау|наконец|получилось|выиграл|побед)", re.I), "excited", 0.6),
     (re.compile(r"\b(груст|плохо|устал|тяжело|одинок|депрес|херово|паршиво|больно|умер)", re.I), "sad", 0.5),
-    (re.compile(r"\b(заеб|беси|заткн|тупая|дура|отвали|надоел|заебал|иди на|молчи)", re.I), "annoyed", 0.8),
+    (re.compile(r"(заеб|беси|заткн|туп(ая|ой)|дура\b|дебил|идиот|отвали|надоел|заебал|иди на|пош(ла|ёл|ел) на|нахуй|нахер|нах\b|шалав|шлюх|тварь|уеб|урод|сука|мраз|гнид|вали отсюда|пшла|молчи)", re.I), "annoyed", 0.92),
     (re.compile(r"\b(почему|как так|а что|расскаж|интересно|а как|что такое)", re.I), "curious", 0.4),
 ]
 
 async def maybe_drift(session: AsyncSession, user_id: int,
                       chance: float = 0.1) -> tuple[str, bool]:
     m = await repo.get_mood(session, user_id)
+    if getattr(settings, "MOOD_PERSIST_ENABLED", True) and m.mood in _WARM \
+            and (m.intensity or 0) >= 0.6 \
+            and _hours_since(m.updated_at) < float(getattr(settings, "MOOD_LINGER_HOURS", 2.0) or 2.0):
+        return m.mood, False
     if random.random() < chance:
         candidates = [x for x in MOODS if x != m.mood]
         weights = [_DRIFT_WEIGHTS.get(x, 1.0) for x in candidates]
@@ -52,17 +67,19 @@ async def react_to_message(session: AsyncSession, user_id: int, text: str,
         return current.mood, False
 
     mood, strength = best
+    forced = strength >= 0.85
     if mood == current.mood:
         if mood in _NEGATIVE:
-            new_int = min(0.8, (current.intensity or 0.5) + 0.07)
+            bump = 0.20 if forced else 0.07
+            new_int = min(0.95, (current.intensity or 0.5) + bump)
         else:
             new_int = min(0.95, (current.intensity or 0.5) + 0.15)
         await repo.set_mood(session, user_id, mood, intensity=new_int)
-        return mood, False
+        return mood, forced
 
-    if random.random() < chance * (0.5 + strength):
+    if forced or random.random() < chance * (0.5 + strength):
         await repo.set_mood(session, user_id, mood,
-                            intensity=min(0.95, 0.4 + strength * 0.5))
+                            intensity=min(0.95, 0.45 + strength * 0.5))
         return mood, True
     return current.mood, False
 
@@ -71,7 +88,14 @@ async def relax(session: AsyncSession, user_id: int,
     m = await repo.get_mood(session, user_id)
     if m.mood not in _NEGATIVE:
         return m.mood, False
-    new_int = (m.intensity if m.intensity is not None else 0.5) - step
+    if getattr(settings, "MOOD_PERSIST_ENABLED", True):
+        linger = float(getattr(settings, "MOOD_LINGER_HOURS", 2.0) or 2.0)
+        decay = _hours_since(m.updated_at) / linger
+        if decay < 0.05:
+            return m.mood, False
+        new_int = (m.intensity if m.intensity is not None else 0.5) - decay
+    else:
+        new_int = (m.intensity if m.intensity is not None else 0.5) - step
     if new_int <= 0.35:
         new_mood = random.choices(
             ["curious", "happy", "playful"], weights=[1.3, 1.2, 1.0], k=1
@@ -84,3 +108,28 @@ async def relax(session: AsyncSession, user_id: int,
 
 async def set(session: AsyncSession, user_id: int, mood: str, intensity: float = 0.5):
     await repo.set_mood(session, user_id, mood, intensity)
+
+
+_INSULT_RE = re.compile(
+    r"(заеб|беси|заткн|туп(ая|ой)|дура\b|дебил|идиот|отвали|надоел|заебал|"
+    r"иди на|пош(ла|ёл|ел) на|нахуй|нахер|нах\b|шалав|шлюх|тварь|уеб|урод|"
+    r"сука|мраз|гнид|вали отсюда|пшла|молчи|пидор|долбо|говно|мудак)",
+    re.I,
+)
+
+_APOLOGY_RE = re.compile(
+    r"(извин|прости(те)?\b|прощени|прошу проще|\bсорри\b|\bсорян\b|\bсори\b|пардон|"
+    r"виноват|был неправ|была неправ|больше не буду|не хотел тебя|не хотела тебя|"
+    r"не хотел обид|не хотела обид|мириться|не злись|не обижайся|давай мир)",
+    re.I,
+)
+
+
+def is_insult(text: str | None) -> bool:
+    """Прямое оскорбление/агрессия в её адрес."""
+    return bool(text and _INSULT_RE.search(text))
+
+
+def is_apology(text: str | None) -> bool:
+    """Похоже на извинение/попытку помириться."""
+    return bool(text and _APOLOGY_RE.search(text))

@@ -1,3 +1,4 @@
+"""Обработчики inline-кнопок (callback query)."""
 from __future__ import annotations
 import json
 
@@ -123,9 +124,13 @@ async def admin_cb(cb: CallbackQuery):
             )
 
         elif action == "memory":
-            res = await s.execute(select(func.count()).select_from(Memory))
+            u = await repo.upsert_user(s, cb.from_user.id,
+                                       cb.from_user.username, cb.from_user.first_name)
+            res = await s.execute(
+                select(func.count()).select_from(Memory).where(Memory.user_id == u.id)
+            )
             total = res.scalar_one()
-            top = await repo.top_memories(s, cb.from_user.id, limit=10)
+            top = await repo.top_memories(s, u.id, limit=10)
             lines = "\n".join(f"• [{m.importance}] {m.fact}" for m in top) or "(пусто)"
             await cb.message.edit_text(
                 f"<b>Память</b>\nВсего записей: <b>{total}</b>\n\n{lines}",
@@ -203,9 +208,6 @@ async def admin_cb(cb: CallbackQuery):
 
     await cb.answer()
 
-# =====================================================================
-#  Панель очеловечивания (🎭 Человечность)
-# =====================================================================
 HUMAN_BOOL_FIELDS = [
     ("NO_EMDASH",           "Заменять тире на -"),
     ("HUMAN_TYPING",        "Имитация набора"),
@@ -259,7 +261,6 @@ def render_human_panel() -> tuple[str, InlineKeyboardMarkup]:
 
 
 def _next_preset(presets: list[float], cur: float) -> float:
-    # берём ближайший пресет и переходим к следующему по кругу
     try:
         idx = min(range(len(presets)), key=lambda i: abs(presets[i] - cur))
     except ValueError:

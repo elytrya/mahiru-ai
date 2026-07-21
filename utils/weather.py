@@ -12,7 +12,6 @@ from utils.logger import log
 
 _API_URL = "https://api.openweathermap.org/data/2.5/weather"
 
-# группы погоды OpenWeather (weather[0]["main"])
 _RAIN = {"Rain", "Drizzle", "Thunderstorm"}
 _SNOW = {"Snow"}
 

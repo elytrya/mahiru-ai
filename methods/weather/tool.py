@@ -39,11 +39,10 @@ class WeatherTool(Tool):
     async def run(self, args, *, session, user_id: int):
         raw = (args.get("city") or "").strip()
         low = raw.lower()
-        # 'у себя' / 'self' - берём город самой Махиру
         if low in ("self", "я", "у меня", "мой", "свой", "мой город", "дома"):
             city = (getattr(settings, "MAHIRU_CITY", "") or "").strip() or None
         else:
-            city = raw or None  # пусто -> get_weather сам подставит город владельца
+            city = raw or None
 
         ck = f"weather_tool:{(city or 'owner').lower()}"
         cached = await cache_get(ck)

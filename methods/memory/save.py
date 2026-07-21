@@ -1,3 +1,4 @@
+"""Инструмент: сохранить факт в память."""
 from __future__ import annotations
 from methods.base import Tool
 from memory.storage import save

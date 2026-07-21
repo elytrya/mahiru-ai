@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""Интерактивный мастер первичной настройки: создаёт .env, ставит зависимости, помогает с ключами."""
 from __future__ import annotations
 import os
 import sys

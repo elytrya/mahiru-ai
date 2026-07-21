@@ -1,3 +1,4 @@
+"""Инструмент: запросить у пользователя нужный API-ключ."""
 from __future__ import annotations
 from methods.base import Tool
 

@@ -1,3 +1,4 @@
+"""Чтение и запись настроек и ключей в БД, поля поведения."""
 from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -52,8 +53,6 @@ async def delete_key(name: str, session: AsyncSession | None = None) -> None:
         except Exception:
             pass
 
-# из БД подгружаем ТОЛЬКО секреты/ключи. Модель/провайдер/хост берём из config.py/.env,
-# иначе старое значение в БД навечно перебивало бы настройки из файла.
 _SECRET_SUFFIXES = ("_API_KEY", "_KEY", "_TOKEN", "_SECRET")
 _SECRET_EXTRA = {"YANDEX_FOLDER", "YANDEX_PROMPT_ID", "G4F_PROVIDER"}
 
@@ -76,13 +75,7 @@ async def load_overrides() -> int:
                     pass
     return n
 
-# =====================================================================
-#  ПОВЕДЕНЧЕСКИЕ (не-секретные) настройки очеловечивания.
-#  Хранятся в БД (ключ beh:*), чтобы /admin и /humanset меняли их на лету
-#  и они переживали перезапуск. .env/config — значения по умолчанию.
-# =====================================================================
 
-# поля, которые можно менять через /humanset и кнопки /admin
 BEHAVIOR_FIELDS = (
     "NO_EMDASH",
     "HUMAN_TYPING",
@@ -98,37 +91,26 @@ BEHAVIOR_FIELDS = (
     "SPLIT_MAX",
     "TYPING_INDICATOR",
     "SHOW_TOOL_CALLS",
-    # реакции-эмодзи
     "REACTIONS_ENABLED",
     "REACTION_CHANCE",
-    # опечатки с самоисправлением
     "TYPO_ENABLED",
     "TYPO_CHANCE",
-    # настроение влияет на скорость
     "MOOD_SPEED_ENABLED",
-    # «прочитала, но не ответила»
     "READ_SILENCE_ENABLED",
     "READ_SILENCE_CHANCE",
     "READ_SILENCE_MIN_SECONDS",
     "READ_SILENCE_MAX_SECONDS",
-    # стикеры / кастом-эмодзи
     "STICKERS_ENABLED",
     "STICKER_CHANCE",
-    # памятные даты
     "DATES_ENABLED",
     "DATES_GREET_HOUR",
-    # ревность/обидки
     "JEALOUSY_ENABLED",
     "JEALOUSY_HOURS",
-    # энергия/батарейка
     "ENERGY_ENABLED",
-    # уровень близости
     "CLOSENESS_ENABLED",
     "CLOSENESS_PER_MSG",
-    # клички/пет-неймы
     "PETNAMES_ENABLED",
     "PETNAME_THRESHOLD",
-    # погода-забота
     "WEATHER_ENABLED",
     "WEATHER_CITY",
     "WEATHER_CARE_HOUR",

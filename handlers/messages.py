@@ -1,3 +1,4 @@
+"""Основной обработчик сообщений: диалог, стикеры, голос и человеко-подобные ответы."""
 from __future__ import annotations
 import asyncio
 import hashlib
@@ -21,11 +22,11 @@ from handlers import lib_download, steam_flow
 from utils.humanize import send_humanlike, maybe_react
 from utils.logger import log
 from utils.settings_kv import set_key, get_key
+from utils import stickers
 
 router = Router(name="messages")
 _core = AICore()
 
-# дебаунс: склейка нескольких быстрых сообщений в ОДИН ответ (экономия токенов + живость)
 _DEBOUNCE_SECONDS = 2.5
 _MSG_BUFFER: dict[int, dict] = {}
 
@@ -97,7 +98,6 @@ _KEY_SETUP_FLOWS: dict[str, dict] = {
 
 _PENDING_KEY: dict[int, dict] = {}
 _PENDING_KEY_TTL = 600
-# провайдеры, которые юзер пропустил в текущей сессии (чтоб не предлагать снова)
 _G4F_SKIPPED: dict[int, set[str]] = {}
 
 _G4F_PROVIDER_INFO: dict[str, dict] = {
@@ -230,7 +230,6 @@ async def _send_g4f_setup_prompt(msg: Message, err_txt: str,
     needy = _parse_g4f_needy(err_txt)
     name = await _pick_g4f_provider(uid, needy)
 
-    # предлагать больше некого — сбрасываем skip и показываем общий список / встроенные
     if not name:
         _G4F_SKIPPED.pop(uid, None)
         text, kb = await _build_keys_menu(
@@ -360,7 +359,6 @@ async def cb_g4fskip(cb: CallbackQuery):
     except Exception:
         pass
     await cb.answer("Ок, пропустила")
-    # предложить следующего (или общий список, если больше некого)
     await _send_g4f_setup_prompt(cb.message, "", user_id=cb.from_user.id)
 
 TOOL_CACHE: dict[str, tuple[str, dict, float]] = {}
@@ -442,7 +440,7 @@ async def start(msg: Message):
         return
     if not _allowed(msg.from_user.id):
         log.info(f"[deny] /start от чужого tg_id={msg.from_user.id}")
-        await msg.answer("Привет! Я — личный компаньон и общаюсь только со своим владельцем 🌸")
+        await msg.answer("Привет! Я — ��ичный компаньон и общаюсь только со своим владельцем 🌸")
         return
     async with SessionLocal() as s:
         await repo.upsert_user(s, msg.from_user.id, msg.from_user.username,
@@ -488,6 +486,206 @@ async def cmd_setkey(msg: Message):
     await msg.answer(f"Сохранила <b>{name}</b> — могу пользоваться сразу.")
     log.info(f"🔐 ключ сохранён: {name}")
 
+_PENDING_STICKER: dict[int, dict] = {}
+_STICKER_SLOTS = tuple(stickers.MOOD_SLOTS)
+
+
+def _extract_sticker_id(m) -> tuple[str, str] | None:
+    """Из сообщения-ответа достаёт id стикера или кастом-эмодзи."""
+    st = getattr(m, "sticker", None)
+    if st is not None:
+        cem = getattr(st, "custom_emoji_id", None)
+        if cem:
+            return ("custom", str(cem))
+        return ("sticker", st.file_id)
+    for e in (getattr(m, "entities", None) or []):
+        if getattr(e, "type", "") == "custom_emoji" and getattr(e, "custom_emoji_id", None):
+            return ("custom", str(e.custom_emoji_id))
+    return None
+
+
+def _sticker_menu_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Добавить стикер/пак", callback_data="stkhelp:add")],
+        [InlineKeyboardButton(text="🚫 Убрать цветочек", callback_data="stkhelp:off")],
+    ])
+
+
+def _pack_slots_kb() -> InlineKeyboardMarkup:
+    rows, row = [], []
+    for i, s in enumerate(_STICKER_SLOTS, 1):
+        row.append(InlineKeyboardButton(text=s, callback_data=f"stkpack:{s}"))
+        if i % 3 == 0:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton(text="✖ отмена", callback_data="stkpack:cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _sticker_slots_kb() -> InlineKeyboardMarkup:
+    rows, row = [], []
+    for i, s in enumerate(_STICKER_SLOTS, 1):
+        row.append(InlineKeyboardButton(text=s, callback_data=f"stkslot:{s}"))
+        if i % 3 == 0:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton(text="✖ отмена", callback_data="stkslot:cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.message(Command("sticker"))
+async def cmd_sticker(msg: Message):
+    if msg.from_user is None or not _allowed(msg.from_user.id):
+        return
+    parts = (msg.text or "").split()
+    args = [p.lower() for p in parts[1:]]
+    reply = msg.reply_to_message
+
+    if args and args[0] in ("off", "nodefault"):
+        await stickers.disable_defaults()
+        await msg.answer("Ок, стандартный цветочек больше не буду слать 🌸→🚫")
+        return
+    if args and args[0] in ("clear", "clr"):
+        slot = args[1] if len(args) > 1 else "any"
+        n = await stickers.clear_slot(slot)
+        await msg.answer(f"Очистила набор <b>{slot}</b> ({n} шт).")
+        return
+
+    if reply is None:
+        data = await stickers.get_all()
+        lines = [f"• {k}: {len(v)}" for k, v in data.items() if v]
+        cur = "\n".join(lines) or "(пусто)"
+        await msg.answer(
+            "🏷 <b>Стикеры по настроению</b>\n\n"
+            f"{cur}\n\n"
+            "Добавить: ответь на стикер/кастом-эмодзи командой <code>/sticker</code> "
+            "(покажу кнопки настроений) или сразу <code>/sticker loving</code>.\n"
+            "Убрать дефолтный цветочек: <code>/sticker off</code>\n"
+            "Очистить набор: <code>/sticker clear loving</code>",
+            reply_markup=_sticker_menu_kb(),
+        )
+        return
+
+    got = _extract_sticker_id(reply)
+    if got is None:
+        await msg.answer("Это не стикер и не кастом-эмодзи 🤔 Ответь командой на стикер.")
+        return
+    kind, sid = got
+    if args and args[0] in _STICKER_SLOTS:
+        ok = await stickers.add_sticker(args[0], sid)
+        await msg.answer(f"{'Добавила' if ok else 'Уже есть'} в набор <b>{args[0]}</b> 🌸")
+        return
+    _PENDING_STICKER[msg.from_user.id] = {"sid": sid, "kind": kind, "ts": time.time()}
+    await msg.answer("В какое настроение сохранить этот стикер?", reply_markup=_sticker_slots_kb())
+
+
+@router.callback_query(F.data.startswith("stkslot:"))
+async def cb_stkslot(cb: CallbackQuery):
+    slot = cb.data.split(":", 1)[1]
+    if slot == "cancel":
+        _PENDING_STICKER.pop(cb.from_user.id, None)
+        await cb.message.edit_text("Отменила 🙂")
+        await cb.answer()
+        return
+    pend = _PENDING_STICKER.pop(cb.from_user.id, None)
+    if not pend or time.time() - pend["ts"] > 600:
+        await cb.answer("Стикер потерялся, попробуй ещё раз", show_alert=True)
+        return
+    ok = await stickers.add_sticker(slot, pend["sid"])
+    await cb.message.edit_text(f"{'Добавила' if ok else 'Уже был'} в набор <b>{slot}</b> 🌸")
+    await cb.answer("Готово")
+
+
+_PENDING_PACK: dict[int, dict] = {}
+
+
+async def _collect_pack_ids(bot, set_name: str) -> list[str]:
+    """Собирает id всех стикеров пака (file_id или custom_emoji_id)."""
+    try:
+        s = await bot.get_sticker_set(set_name)
+    except Exception as e:
+        log.warning(f"🏷 не смогла загрузить пак {set_name}: {e}")
+        return []
+    ids: list[str] = []
+    for st in (getattr(s, "stickers", None) or []):
+        cem = getattr(st, "custom_emoji_id", None)
+        ids.append(str(cem) if cem else st.file_id)
+    return ids
+
+
+@router.message(F.sticker)
+async def on_sticker(msg: Message):
+    if msg.from_user is None or not _allowed(msg.from_user.id):
+        return
+    st = msg.sticker
+    set_name = getattr(st, "set_name", None)
+    cem = getattr(st, "custom_emoji_id", None)
+    single_id = str(cem) if cem else st.file_id
+    _PENDING_PACK[msg.from_user.id] = {
+        "ts": time.time(), "single": single_id, "set_name": set_name,
+    }
+    if set_name:
+        await msg.answer(
+            f"🏷 Стикер из пака <b>{set_name}</b>. В какое настроение сохранить <b>весь пак</b>?\n"
+            "(а если нужен только этот один - ответь на него командой <code>/sticker</code>)",
+            reply_markup=_pack_slots_kb(),
+        )
+    else:
+        await msg.answer(
+            "🏷 Одиночный стикер (без пака). В какое настроение сохранить?",
+            reply_markup=_pack_slots_kb(),
+        )
+
+
+@router.callback_query(F.data.startswith("stkpack:"))
+async def cb_stkpack(cb: CallbackQuery):
+    slot = cb.data.split(":", 1)[1]
+    if slot == "cancel":
+        _PENDING_PACK.pop(cb.from_user.id, None)
+        await cb.message.edit_text("Отменила 🙂")
+        await cb.answer()
+        return
+    pend = _PENDING_PACK.pop(cb.from_user.id, None)
+    if not pend or time.time() - pend["ts"] > 600:
+        await cb.answer("Стикер потерялся, попробуй ещё раз", show_alert=True)
+        return
+    set_name = pend.get("set_name")
+    if set_name:
+        await cb.message.edit_text(f"Импортирую пак <b>{set_name}</b>… ⏳")
+        ids = await _collect_pack_ids(cb.bot, set_name)
+        if not ids:
+            ids = [pend["single"]]
+        added = await stickers.add_many(slot, ids)
+        await cb.message.edit_text(
+            f"🏷 Импортировала пак <b>{set_name}</b> в набор <b>{slot}</b>: "
+            f"+{added} (всего в паке {len(ids)}) 🌸"
+        )
+    else:
+        ok = await stickers.add_sticker(slot, pend["single"])
+        await cb.message.edit_text(f"{'Добавила' if ok else 'Уже был'} стикер в набор <b>{slot}</b> 🌸")
+    await cb.answer("Готово")
+
+
+@router.callback_query(F.data.startswith("stkhelp:"))
+async def cb_stkhelp(cb: CallbackQuery):
+    action = cb.data.split(":", 1)[1]
+    if action == "off":
+        await stickers.disable_defaults()
+        await cb.message.edit_text("Ок, стандартный цветочек больше не буду слать 🌸→🚫")
+        await cb.answer()
+        return
+    if action == "add":
+        await cb.message.answer(
+            "Пришли мне <b>любой стикер</b> - если он из пака, предложу импортировать <b>весь пак</b> "
+            "в выбранное настроение. Или ответь на стикер командой <code>/sticker</code> - добавлю только его."
+        )
+        await cb.answer()
+
+
 @router.message(F.photo | F.text)
 async def any_message(msg: Message):
     if msg.from_user is None:
@@ -516,7 +714,6 @@ async def any_message(msg: Message):
                 await msg.delete()
             except Exception:
                 pass
-            # g4f-ключ: сбрасываем dead-пометки и говорим юзеру повторить запрос
             if key_name.startswith("G4F_KEY_"):
                 prov_up = key_name[len("G4F_KEY_"):]
                 real = next((n for n in _G4F_PROVIDER_INFO if n.upper() == prov_up), prov_up)
@@ -543,7 +740,10 @@ async def any_message(msg: Message):
             log.info(f"🔐 pending-ключ сохранён: {key_name} → provider={pid}")
             return
 
-    # === дебаунс/склейка спама: несколько быстрых сообщений -> один ответ ===
+    if msg.text and msg.text.strip().startswith("/"):
+        log.info(f"[cmd] игнорирую необработанную команду: {msg.text.strip()[:32]!r}")
+        return
+
     images: list[bytes] = []
     if msg.photo:
         try:
@@ -557,6 +757,13 @@ async def any_message(msg: Message):
     if not text and not images:
         return
 
+    r = msg.reply_to_message
+    if r is not None:
+        quoted = (r.text or r.caption or "").strip()
+        if quoted:
+            who = "Mahiru" if (r.from_user and getattr(r.from_user, "is_bot", False)) else "он"
+            text = f"[в ответ на сообщение {who}: «{quoted[:300]}»]\n{text}".strip()
+
     await _buffer_and_schedule(msg, text, images)
 
 
@@ -567,14 +774,14 @@ async def _buffer_and_schedule(msg: Message, text: str, images: list[bytes]) -> 
     if buf is None:
         buf = {"texts": [], "images": [], "task": None, "msg": msg}
         _MSG_BUFFER[tg_id] = buf
-    buf["msg"] = msg  # отвечаем на последнее сообщение в пачке
+    buf["msg"] = msg
     if text:
         buf["texts"].append(text)
     if images:
         buf["images"].extend(images)
     old = buf.get("task")
     if old and not old.done():
-        old.cancel()  # пришло новое сообщение - сбрасываем таймер
+        old.cancel()
     buf["task"] = asyncio.create_task(_flush_after_delay(tg_id))
 
 
@@ -600,6 +807,17 @@ async def _flush_after_delay(tg_id: int) -> None:
         log.exception("_run_chat упал")
 
 
+_VOICE_REQ_RE = re.compile(
+    r"(голосов|голоском|своим голос|озвуч|скажи вслух|проговори|\bвойс\b|аудио сообщени|голосом)",
+    re.IGNORECASE,
+)
+
+
+def _wants_voice(text: str) -> bool:
+    """Явная просьба ответить голосом."""
+    return bool(text and _VOICE_REQ_RE.search(text))
+
+
 async def _run_chat(msg: Message, text: str, images: list[bytes] | None) -> None:
     """Единая обработка (склеенного) сообщения: интенты, LLM, ответ."""
     cur_mood = None
@@ -609,13 +827,11 @@ async def _run_chat(msg: Message, text: str, images: list[bytes] | None) -> None
     async with SessionLocal() as s:
         user = await repo.upsert_user(s, msg.from_user.id, msg.from_user.username,
                                       msg.from_user.first_name)
-        # текущее настроение — влияет на реакции, скорость и стикеры
         try:
             _ms = await repo.get_mood(s, user.id)
             cur_mood = getattr(_ms, "mood", None)
         except Exception:
             cur_mood = None
-        # иногда ставит эмодзи-реакцию на входящее сообщение (перед ответом)
         try:
             await maybe_react(msg, cur_mood)
         except Exception:
@@ -636,7 +852,6 @@ async def _run_chat(msg: Message, text: str, images: list[bytes] | None) -> None
                     await lib_download.start_download_flow(msg, user.id, kind, query)
                     return
 
-            # после 'не нашла, напиши точнее' — следующее название сразу запускает скачивание (без LLM)
             follow = await lib_download.maybe_followup_download(s, user.id, text)
             if follow:
                 kind, query = follow
@@ -673,9 +888,14 @@ async def _run_chat(msg: Message, text: str, images: list[bytes] | None) -> None
                 await msg.answer("Ой, меня немного закоротило \U0001f605 Попробуй ещё раз?")
             return
 
+    if getattr(result, "ignored", False):
+        log.info("\U0001f64a молчу (режим обиды) - ответа не отправляю")
+        return
+
     kb = _tools_keyboard(tools_used) if (settings.SHOW_TOOL_CALLS and tools_used) else None
-    # отвечает «по-живому»: паузы, «печатает…», опечатки, стикеры, скорость по настроению
+    force_voice = _wants_voice(text)
     await send_humanlike(msg, answer, reply_markup=kb,
-                         disable_web_page_preview=False, mood=cur_mood)
+                         disable_web_page_preview=False, mood=cur_mood,
+                         force_voice=force_voice)
     if attachments:
         await _send_attachments(msg, attachments)

@@ -1,3 +1,4 @@
+"""Базовые типы и абстрактный класс провайдера LLM (сообщения, ответы, вызовы инструментов)."""
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field

@@ -5,13 +5,13 @@
 """
 from __future__ import annotations
 import asyncio
+import os
 import random
 import re
 
 from config import settings
+from utils.logger import log
 
-# ── тире ──────────────────────────────────────────────────────────────────
-# длинное тире «—», среднее «–», горизонтальная черта «―», минус «−»
 _DASH_RE = re.compile(r"[\u2014\u2013\u2015\u2212]")
 
 def dedash(text: str) -> str:
@@ -22,13 +22,10 @@ def dedash(text: str) -> str:
         return text
     return _DASH_RE.sub("-", text)
 
-# ── задержки ──────────────────────────────────────────────────────────────
 def _rand(a: float, b: float) -> float:
     lo, hi = (a, b) if a <= b else (b, a)
     return random.uniform(lo, hi)
 
-# множители скорости по настроению: (печать, пауза «заметила»)
-# >1 = медленнее/холоднее, <1 = быстрее/теплее
 MOOD_SPEED = {
     "annoyed": (1.35, 1.5),
     "sad":     (1.25, 1.4),
@@ -68,17 +65,15 @@ def typing_delay(text: str, mood: str | None = None) -> float:
     n = len(text or "")
     cps = float(getattr(settings, "TYPING_SPEED_CPS", 14.0)) or 14.0
     base = n / cps
-    base *= random.uniform(0.8, 1.25)  # живой разброс
-    base *= _mood_mult(mood)[0]        # настроение: злая печатает дольше
+    base *= random.uniform(0.8, 1.25)
+    base *= _mood_mult(mood)[0]
     lo = float(getattr(settings, "TYPING_MIN_SECONDS", 1.2))
     hi = float(getattr(settings, "TYPING_MAX_SECONDS", 9.0))
     return max(lo, min(hi, base))
 
-# ── разбивка ответа на несколько «пузырей» ────────────────────────────────
 _SENT_SPLIT = re.compile(r"(?<=[.!?…)])\s+")
 
 def _looks_html_safe(chunk: str) -> bool:
-    # не режем так, чтобы разорвать html-тег (у бота parse_mode=HTML)
     return chunk.count("<") == chunk.count(">")
 
 def split_message(text: str) -> list[str]:
@@ -97,10 +92,8 @@ def split_message(text: str) -> list[str]:
     if max_parts <= 1 or len(text) < 90:
         return [text]
 
-    # 1) по строкам
     parts = [ln.strip() for ln in text.split("\n") if ln.strip()]
 
-    # 2) если строк мало, а текст длинный — доразбиваем по предложениям
     if len(parts) < max_parts:
         expanded: list[str] = []
         for pt in parts:
@@ -113,13 +106,11 @@ def split_message(text: str) -> list[str]:
     if not parts:
         return [text]
 
-    # 3) схлопываем до max_parts, склеивая хвост
     if len(parts) > max_parts:
         head = parts[: max_parts - 1]
         tail = " ".join(parts[max_parts - 1 :])
         parts = head + [tail]
 
-    # 4) чиним возможные разорванные html-теги, склеивая соседей
     fixed: list[str] = []
     for pt in parts:
         if fixed and not _looks_html_safe(fixed[-1]):
@@ -129,8 +120,6 @@ def split_message(text: str) -> list[str]:
     return fixed or [text]
 
 
-# ── реакции-эмодзи на сообщения ─────────────────────────────────────
-# только эмодзи из стандартного набора Telegram-реакций (без премиума)
 REACTION_SETS = {
     "happy":   ["\u2764", "\U0001f970", "\U0001f601", "\U0001f44d", "\U0001f389"],
     "loving":  ["\u2764", "\U0001f970", "\U0001f60d", "\U0001f618"],
@@ -161,16 +150,23 @@ async def maybe_react(msg, mood: str | None = None) -> bool:
     except Exception:
         return False
 
-# ── опечатки с самоисправлением ─────────────────────────────────
 _WORD_RE = re.compile(r"[\u0410-\u042f\u0430-\u044f\u0401\u0451A-Za-z]{4,}")
 
 def _make_typo(word: str) -> str:
+    """Живая опечатка: перестановка / пропущенная / задвоенная буква (первую не трогаем)."""
     if len(word) < 4:
         return word
-    i = random.randint(1, len(word) - 2)  # не трогаем первую букву
     chars = list(word)
-    chars[i], chars[i + 1] = chars[i + 1], chars[i]  # переставляем две соседние
-    return "".join(chars)
+    i = random.randint(1, len(word) - 2)
+    strat = random.choice(("swap", "swap", "drop", "double"))
+    if strat == "drop":
+        del chars[i]
+    elif strat == "double":
+        chars.insert(i, chars[i])
+    else:
+        chars[i], chars[i + 1] = chars[i + 1], chars[i]
+    typo = "".join(chars)
+    return typo if typo != word else word
 
 def _maybe_typo(chunk: str) -> tuple[str, str | None]:
     """Иногда возвращает (текст_с_опечаткой, "*правильное_слово"). Иначе (чанк, None)."""
@@ -179,7 +175,6 @@ def _maybe_typo(chunk: str) -> tuple[str, str | None]:
     chance = float(getattr(settings, "TYPO_CHANCE", 0.0))
     if chance <= 0 or random.random() >= chance:
         return chunk, None
-    # не трогаем сообщения с html/ссылками, чтоб не поломать разметку
     if "<" in chunk or ">" in chunk or "http" in chunk or "`" in chunk:
         return chunk, None
     words = [m for m in _WORD_RE.finditer(chunk) if len(m.group()) >= 4]
@@ -193,7 +188,6 @@ def _maybe_typo(chunk: str) -> tuple[str, str | None]:
     typo_chunk = chunk[: m.start()] + typo + chunk[m.end():]
     return typo_chunk, "*" + word
 
-# ── «прочитала, но не ответила» + стикеры ────────────────────────
 async def _maybe_read_silence(msg) -> None:
     if not getattr(settings, "READ_SILENCE_ENABLED", False):
         return
@@ -202,16 +196,16 @@ async def _maybe_read_silence(msg) -> None:
         return
     from aiogram.utils.chat_action import ChatActionSender
     try:
-        # мелькнуло «печатает…» - будто увидела и начала отвечать
         async with ChatActionSender.typing(bot=msg.bot, chat_id=msg.chat.id):
             await asyncio.sleep(_rand(1.0, 2.5))
     except Exception:
         pass
-    # ...и пропала на пару минут
     await asyncio.sleep(_rand(
         float(getattr(settings, "READ_SILENCE_MIN_SECONDS", 45.0)),
         float(getattr(settings, "READ_SILENCE_MAX_SECONDS", 150.0)),
     ))
+
+_LAST_STICKER_TS: dict[int, float] = {}
 
 async def _maybe_send_sticker(msg, mood: str | None) -> None:
     if not getattr(settings, "STICKERS_ENABLED", False):
@@ -219,20 +213,64 @@ async def _maybe_send_sticker(msg, mood: str | None) -> None:
     chance = float(getattr(settings, "STICKER_CHANCE", 0.0))
     if chance <= 0 or random.random() >= chance:
         return
+    import time as _time
+    cd = float(getattr(settings, "STICKER_COOLDOWN_SECONDS", 240.0))
+    chat_id = getattr(getattr(msg, "chat", None), "id", 0)
+    now_ts = _time.monotonic()
+    if cd > 0 and (now_ts - _LAST_STICKER_TS.get(chat_id, 0.0)) < cd:
+        return
     try:
         from utils import stickers
-        await stickers.send(msg, mood)
+        if await stickers.send(msg, mood):
+            _LAST_STICKER_TS[chat_id] = now_ts
     except Exception:
         pass
 
 
+async def _maybe_send_voice(msg, text: str, mood: str | None = None,
+                            force: bool = False) -> bool:
+    """Отвечает голосовым (Silero TTS). force=True - по явной просьбе, без рандома. True если отправила."""
+    if not force:
+        if not getattr(settings, "VOICE_ENABLED", False):
+            return False
+        if random.random() > float(getattr(settings, "VOICE_CHANCE", 0.12)):
+            return False
+    try:
+        from utils import voice as voice_mod
+        path = await voice_mod.synthesize(text, force=force)
+    except Exception as e:
+        log.warning("🎙 озвучка недоступна ({})", e)
+        return False
+    if not path:
+        return False
+    try:
+        from aiogram.types import FSInputFile
+        try:
+            from aiogram.utils.chat_action import ChatActionSender
+            async with ChatActionSender.record_voice(bot=msg.bot, chat_id=msg.chat.id):
+                await asyncio.sleep(_rand(1.0, 2.2))
+        except Exception:
+            await asyncio.sleep(_rand(0.8, 1.5))
+        await msg.answer_voice(FSInputFile(path))
+        return True
+    except Exception as e:
+        log.warning("🎙 не смогла отправить голосовое ({}) - отвечу текстом", e)
+        return False
+    finally:
+        try:
+            os.remove(path)
+        except Exception:
+            pass
+
+
 async def send_humanlike(msg, text: str, reply_markup=None,
                          disable_web_page_preview: bool = False,
-                         mood: str | None = None) -> None:
+                         mood: str | None = None,
+                         force_voice: bool = False) -> None:
     """Отправляет ответ «по-живому»: паузы + «печатает…» + разбивка + опечатки + стикеры.
 
     msg — aiogram Message. reply_markup вешается только на ПОСЛЕДНЕЕ сообщение.
-    mood — текущее настроение (влияет на скорость и выбор стикера).
+    mood — текущее настроение (влияет на скорос��ь и выбор стикера).
     Если HUMAN_TYPING выключен — просто отправляет одним сообщением сразу.
     """
     from aiogram.utils.chat_action import ChatActionSender
@@ -241,53 +279,78 @@ async def send_humanlike(msg, text: str, reply_markup=None,
     if not text:
         return
 
+    if reply_markup is None:
+        try:
+            if await _maybe_send_voice(msg, text, mood, force=force_voice):
+                return
+        except Exception:
+            pass
+
+    sticker_mood = mood
+    try:
+        from utils import stickers as _stmod
+        _sm = _stmod.mood_from_text(text)
+        if _sm:
+            sticker_mood = _sm
+    except Exception:
+        pass
+
     if not getattr(settings, "HUMAN_TYPING", False):
         await msg.answer(text, reply_markup=reply_markup,
                          disable_web_page_preview=disable_web_page_preview)
-        await _maybe_send_sticker(msg, mood)
+        await _maybe_send_sticker(msg, sticker_mood)
         return
 
     chunks = split_message(text)
     last = len(chunks) - 1
 
-    # «занята» — иногда отвечает заметно позже
     ignore = maybe_ignore_delay()
     if ignore > 0:
         await asyncio.sleep(ignore)
 
-    # «прочитала, но не ответила» — мелькнула «печатает…», пропала на пару минут
     await _maybe_read_silence(msg)
 
     for i, chunk in enumerate(chunks):
-        # пауза «читаю/думаю» перед первым, короткая пауза между пузырями
         pre = read_delay(mood) if i == 0 else _rand(0.3, 1.1) * _mood_mult(mood)[1]
         if pre > 0:
             await asyncio.sleep(pre)
-        # иногда пишет с опечаткой и тут же поправляется
         send_text, correction = _maybe_typo(chunk)
         try:
             async with ChatActionSender.typing(bot=msg.bot, chat_id=msg.chat.id):
                 await asyncio.sleep(typing_delay(send_text, mood))
         except Exception:
-            # если индикатор не смог — просто ждём, ответ всё равно уйдёт
             await asyncio.sleep(min(2.0, typing_delay(send_text, mood)))
-        await msg.answer(
+        sent = await msg.answer(
             send_text,
             reply_markup=(reply_markup if (i == last and not correction) else None),
             disable_web_page_preview=disable_web_page_preview,
         )
         if correction:
             await asyncio.sleep(_rand(0.6, 1.8))
-            try:
-                async with ChatActionSender.typing(bot=msg.bot, chat_id=msg.chat.id):
-                    await asyncio.sleep(_rand(0.5, 1.2))
-            except Exception:
-                await asyncio.sleep(0.6)
-            await msg.answer(
-                correction,
-                reply_markup=(reply_markup if i == last else None),
-                disable_web_page_preview=disable_web_page_preview,
-            )
+            use_edit = (getattr(settings, "TYPO_EDIT_FIX", True)
+                        and random.random() < float(getattr(settings, "TYPO_EDIT_CHANCE", 0.6)))
+            fixed = False
+            if use_edit and sent is not None:
+                try:
+                    async with ChatActionSender.typing(bot=msg.bot, chat_id=msg.chat.id):
+                        await asyncio.sleep(_rand(0.4, 1.0))
+                    await sent.edit_text(
+                        chunk,
+                        reply_markup=(reply_markup if i == last else None),
+                    )
+                    fixed = True
+                except Exception:
+                    fixed = False
+            if not fixed:
+                try:
+                    async with ChatActionSender.typing(bot=msg.bot, chat_id=msg.chat.id):
+                        await asyncio.sleep(_rand(0.5, 1.2))
+                except Exception:
+                    await asyncio.sleep(0.6)
+                await msg.answer(
+                    correction,
+                    reply_markup=(reply_markup if i == last else None),
+                    disable_web_page_preview=disable_web_page_preview,
+                )
 
-    # иногда докидывает стикер/гифку под настроение
-    await _maybe_send_sticker(msg, mood)
+    await _maybe_send_sticker(msg, sticker_mood)

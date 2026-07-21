@@ -1,3 +1,4 @@
+"""Инструмент: веб-поиск."""
 from __future__ import annotations
 import re
 import html

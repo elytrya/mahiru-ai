@@ -1,3 +1,4 @@
+"""Реестр всех инструментов и сборка их спецификаций для LLM."""
 from __future__ import annotations
 from typing import Any
 

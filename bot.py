@@ -1,3 +1,4 @@
+"""Точка входа: инициализация бота, роутеров, БД и планировщика, запуск polling."""
 from __future__ import annotations
 import asyncio
 import sys
@@ -6,7 +7,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 
 try:
-    # красивые трейсы если либа есть
     from rich.traceback import install as _rich_tb
     _rich_tb(show_locals=False, width=120, max_frames=15, word_wrap=True,
              suppress=["aiogram", "asyncio", "httpx", "anyio", "g4f"])
@@ -61,7 +61,6 @@ from db.session import init_db
 from handlers import messages, admin, callbacks, lib_download, steam_flow
 from scheduler.autonomous import AutonomousScheduler
 
-# команды, которые покажутся в меню Telegram (кнопка «Menu» рядом со скрепкой)
 BOT_COMMANDS = [
     BotCommand(command="start",    description="🌸 Привет / начать общение"),
     BotCommand(command="admin",    description="⚙️ Панель настроек"),
@@ -102,11 +101,20 @@ async def main() -> None:
     except Exception:
         log.exception("load_behavior_overrides failed")
 
-    # тишим шумные фоновые падения сети (напр. индикатор «печатает…» не смог отправиться)
+    import time as _time
+    _net_noise = {"last": 0.0, "suppressed": 0}
     def _loop_exc_handler(loop, context):
         exc = context.get("exception")
         if isinstance(exc, (TelegramNetworkError, OSError, ConnectionError)):
-            log.warning(f"сеть Telegram подтормозила (фон): {exc}")
+            now_ts = _time.monotonic()
+            if now_ts - _net_noise["last"] >= 120:
+                extra = (f" (+{_net_noise['suppressed']} похожих скрыто)"
+                         if _net_noise["suppressed"] else "")
+                log.warning(f"сеть Telegram подтормозила (фон, транзиентно){extra}: {exc}")
+                _net_noise["last"] = now_ts
+                _net_noise["suppressed"] = 0
+            else:
+                _net_noise["suppressed"] += 1
             return
         loop.default_exception_handler(context)
     try:
@@ -114,7 +122,6 @@ async def main() -> None:
     except Exception:
         pass
 
-    # сессия с таймаутом и (опционально) прокси — обход блокировок Telegram
     if settings.TELEGRAM_PROXY:
         session = AiohttpSession(proxy=settings.TELEGRAM_PROXY)
         log.info(f"🌐 Telegram через прокси: {settings.TELEGRAM_PROXY}")
@@ -146,7 +153,6 @@ async def main() -> None:
         log.exception("необработанная ошибка в хендлере", exc_info=event.exception)
         return True
 
-    # если активный провайдер — ollama, поднимаем её заранее в фоне (чтоб первый ответ не ждал)
     if settings.DEFAULT_PROVIDER.lower() == "ollama":
         async def _prewarm_ollama() -> None:
             try:

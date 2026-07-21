@@ -1,3 +1,4 @@
+"""Провайдер локальных моделей через Ollama."""
 from __future__ import annotations
 import json
 import re
@@ -85,7 +86,6 @@ class OllamaProvider(BaseProvider):
                                  "function": {"name": t.name, "description": t.description,
                                               "parameters": t.parameters}} for t in tools]
 
-        # Авто-поднятие: ставим/запускаем Ollama и тянем модель, если надо
         await ollama_bootstrap.ensure_ollama_ready(self.host, self.model)
         data = await self._post_chat(payload)
 
@@ -95,7 +95,6 @@ class OllamaProvider(BaseProvider):
         async with httpx.AsyncClient(timeout=120.0) as c:
             r = await c.post(f"{self.host}/api/chat", json=payload)
             if r.status_code == 404:
-                # модель пропала/не скачана — дотягиваем и повторяем один раз
                 ollama_bootstrap.invalidate(self.host, self.model)
                 await ollama_bootstrap.ensure_ollama_ready(self.host, self.model)
                 r = await c.post(f"{self.host}/api/chat", json=payload)
@@ -117,7 +116,6 @@ class OllamaProvider(BaseProvider):
             tool_calls.append(ToolCall(id=fn.get("name", "tool"),
                                        name=fn.get("name", "tool"),
                                        arguments=args))
-        # модель могла написать tool-call JSON'ом в текст — вытаскиваем и не показываем юзеру
         if not tool_calls and text:
             extracted, text = _extract_toolcalls_from_text(text)
             tool_calls.extend(extracted)

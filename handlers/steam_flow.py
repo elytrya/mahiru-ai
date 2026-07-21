@@ -1,3 +1,4 @@
+"""Диалоговый сценарий поиска и выдачи игр Steam."""
 from __future__ import annotations
 
 import html

@@ -1,3 +1,4 @@
+"""Репозиторий: функции доступа к данным в БД."""
 from __future__ import annotations
 import datetime as dt
 from typing import Sequence
@@ -129,7 +130,6 @@ async def set_setting(session: AsyncSession, key: str, value: str) -> None:
         session.add(Setting(key=key, value=value))
     await session.commit()
 
-# ── памятные даты ───────────────────────────────────────────────────────────
 async def add_date(session: AsyncSession, user_id: int, title: str,
                    month: int, day: int, year: int | None = None,
                    kind: str = "custom") -> ImportantDate:

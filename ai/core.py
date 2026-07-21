@@ -1,3 +1,4 @@
+"""Ядро диалога: собирает контекст, вызывает LLM с инструментами и формирует ответ махирочки."""
 from __future__ import annotations
 import asyncio
 import hashlib
@@ -15,6 +16,8 @@ from ai.providers.factory import build_provider
 from ai.prompts import build_system_prompt, build_petname_prompt
 from ai.context import build_dynamic_context, closeness_level
 from ai import mood as mood_mod
+from ai import threads as threads_mod
+from ai import sulk as sulk_mod
 from config import settings as settings_mod
 from db import repo
 from db.session import SessionLocal
@@ -23,14 +26,13 @@ from methods.registry import tool_specs, run_tool
 from utils.humanize import dedash
 from utils.logger import log
 
-MAX_TOOL_ROUNDS = 4  # больше и так не надо
+MAX_TOOL_ROUNDS = 4
 
 _MD_IMG = re.compile(r"!\[[^\]]*\]\([^)]*\)")
 _MD_LINK = re.compile(r"\[([^\]]+)\]\((?:https?:|www\.)[^)]*\)")
 _BARE_URL = re.compile(r"https?://\S+|www\.\S+")
 _LIST_MARK = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s*")
 
-# сообщения, на которые тулы не нужны в принципе (приветствия, болталка, ack)
 _TRIVIAL = {
     "привет", "прив", "приветик", "приветики", "хай", "хеллоу", "hello", "hi", "ку",
     "здарова", "здорова", "здравствуй", "здравствуйте", "дратути", "йо", "салют",
@@ -52,7 +54,6 @@ def _is_trivial(text: str) -> bool:
         return True
     return t in _TRIVIAL
 
-# признак, что модель вывалила tool-call/JSON вместо нормального текста
 _TOOLJSON_RE = re.compile(
     r'\{[^{}]*"(?:type|name|tool_calls|function)"\s*:.*'
     r'"(?:parameters|arguments|tool_calls|function|name)"',
@@ -66,19 +67,16 @@ def _strip_tool_json(text: str) -> str:
     t = text.strip()
     if t.startswith("{") and _TOOLJSON_RE.search(t):
         return ""
-    # вырезаем fenced ```json {...}``` и голые JSON-объекты тул-коллов внутри текста
     t = re.sub(r"```(?:json)?\s*\{.*?\}\s*```", "", t, flags=re.DOTALL)
     t = _TOOLJSON_RE.sub("", t)
     return t.strip()
 
-# выпиливаем ссылки и картинки, она не каталог
 def _humanize(text: str) -> str:
     if not text:
         return text
     text = _strip_tool_json(text)
     if not text:
         return text
-    # длинное тире «—» / «–» → обычный дефис «-» (управляется NO_EMDASH)
     text = dedash(text)
     text = _MD_IMG.sub("", text)
     text = _MD_LINK.sub(lambda m: m.group(1), text)
@@ -141,6 +139,7 @@ class RespondResult:
     text: str
     tools: list[ToolTrace] = field(default_factory=list)
     attachments: list[Attachment] = field(default_factory=list)
+    ignored: bool = False
 
 def _summarize_args(name: str, args: dict) -> str:
     if not isinstance(args, dict):
@@ -208,6 +207,12 @@ class AICore:
                     await self.memory.observe(s, user_id, user_text, bot_text, self.provider)
             except Exception:
                 log.exception("auto-observe failed")
+            if getattr(settings_mod, "THREADS_ENABLED", True):
+                try:
+                    async with SessionLocal() as s:
+                        await threads_mod.extract(s, user_id, user_text, self.provider)
+                except Exception:
+                    log.exception("thread-extract failed")
 
         asyncio.create_task(_bg())
 
@@ -220,7 +225,6 @@ class AICore:
         threshold = int(getattr(settings_mod, "PETNAME_THRESHOLD", 30) or 30)
         if int(getattr(user_row, "closeness", 0) or 0) < threshold:
             return
-        # пробуем придумать только ОДИН раз (гард через Setting), чтобы не дёргать провайдер каждый раз
         guard = f"petname_tried:{user_id}"
         try:
             if await repo.get_setting(session, guard, None):
@@ -240,7 +244,6 @@ class AICore:
         except Exception:
             log.exception("генерация пет-нейма упала")
             return
-        # санитизация: первое слово, без кавычек/знаков
         name = raw.splitlines()[0].strip() if raw else ""
         name = re.sub(r"[\"'`.,!?:;()\[\]]", "", name).strip()
         name = name.split()[0] if name else ""
@@ -284,8 +287,37 @@ class AICore:
                         f"{mood_state.mood} (intensity={mood_state.intensity:.2f})"
                     )
 
+        reconciled = False
+        insult = False
+        if getattr(settings_mod, "SULK_ENABLED", True):
+            apology = mood_mod.is_apology(turn.text)
+            insult = mood_mod.is_insult(turn.text)
+            sulking = await sulk_mod.is_sulking(session, turn.user_id)
+            if sulking and apology:
+                await sulk_mod.clear(session, turn.user_id)
+                reconciled = True
+                _u = await repo.get_user(session, turn.user_id)
+                _lvl = closeness_level(int(getattr(_u, "closeness", 0) or 0)) if _u else 0
+                if _lvl >= 2:
+                    await mood_mod.set(session, turn.user_id, "curious", 0.45)
+                else:
+                    await mood_mod.set(session, turn.user_id, "annoyed", 0.35)
+                mood_state = await repo.get_mood(session, turn.user_id)
+                log.info(f"\U0001f91d извинился (близость lvl={_lvl}) - выхожу из игнора")
+            elif sulking and not apology:
+                if insult:
+                    strikes = await sulk_mod.enter(session, turn.user_id)
+                    pen = await sulk_mod.apply_penalty(session, turn.user_id, strikes)
+                    log.info(f"\U0001f494 добивает грубостью: близость -{pen}, молчание продлено")
+                await repo.add_message(session, turn.user_id, "user", turn.text)
+                log.info("\U0001f64a игнор: обижена, жду извинений - не отвечаю")
+                return RespondResult(text="", ignored=True)
+            elif insult:
+                strikes = await sulk_mod.enter(session, turn.user_id)
+                pen = await sulk_mod.apply_penalty(session, turn.user_id, strikes)
+                log.info(f"\U0001f624 обида #{strikes}: грубость - игнор до извинений (близость -{pen})")
+
         memories = await self.memory.retrieve(session, turn.user_id, turn.text)
-        # 12 вместо 16: короче контекст = меньше токенов на каждый запрос (связность сохраняется)
         history = await repo.recent_messages(session, turn.user_id, limit=12)
 
         emo = MOOD_EMOJI.get(mood_state.mood, "💭")
@@ -296,8 +328,6 @@ class AICore:
         )
         log.info(f"👤 user: {turn.text[:80]!r}")
 
-        # --- динамика характера: близость / пет-нейм / ревность / энергия ---
-        # когда он последний раз писал (из истории, ещё без текущего сообщения)
         last_user_ts = None
         for m in reversed(history):
             if m.role == "user" and getattr(m, "created_at", None):
@@ -307,20 +337,53 @@ class AICore:
         user_row = None
         try:
             user_row = await repo.get_user(session, turn.user_id)
-            if user_row is not None and getattr(settings_mod, "CLOSENESS_ENABLED", True):
+            if user_row is not None and getattr(settings_mod, "CLOSENESS_ENABLED", True) and not insult:
                 per = int(getattr(settings_mod, "CLOSENESS_PER_MSG", 1) or 1)
                 new_c = await repo.bump_closeness(session, turn.user_id, per)
                 user_row.closeness = new_c
-                # когда близость выросла - сама придумывает ласковое прозвище (один раз)
                 await self._maybe_make_petname(session, turn.user_id, user_row)
         except Exception:
             log.exception("динамика характера (closeness/petname) упала")
 
+        life_event = None
+        try:
+            today_local = dt.datetime.now().date().isoformat()
+            if await repo.get_setting(session, "life_event:date") == today_local:
+                life_event = await repo.get_setting(session, "life_event:text")
+        except Exception:
+            log.exception("чтение ленты жизни упало")
+
+        open_thread_text = None
+        try:
+            if getattr(settings_mod, "THREADS_ENABLED", True):
+                t = await threads_mod.due_thread(
+                    session, turn.user_id,
+                    float(getattr(settings_mod, "THREAD_ASK_AFTER_HOURS", 8.0)),
+                )
+                if t:
+                    open_thread_text = t.get("text")
+                    await threads_mod.mark_asked(session, turn.user_id, open_thread_text)
+        except Exception:
+            log.exception("нити разговора упали")
+
         dynamic = None
         try:
-            dynamic = build_dynamic_context(user_row, last_user_ts)
+            dynamic = build_dynamic_context(
+                user_row, last_user_ts,
+                life_event=life_event, open_thread=open_thread_text,
+            )
         except Exception:
             log.exception("build_dynamic_context упал")
+
+        if reconciled:
+            _rlvl = closeness_level(int(getattr(user_row, "closeness", 0) or 0)) if user_row else 0
+            if _rlvl >= 2:
+                _hint = ("Он только что извинился, а вы уже близки - прими извинения тепло и почти сразу оттай, "
+                         "ты по нему соскучилась. Лёгкая обида ещё чувствуется, но ты рада помириться.")
+            else:
+                _hint = ("Он извинился, но вы ещё не особо близки - прими извинения сдержанно и прохладно, "
+                         "оттаивай медленно и осторожно, не бросайся миловаться.")
+            dynamic = (dynamic + "\n" + _hint) if dynamic else _hint
 
         system_prompt = build_system_prompt(personality, mood_state, memories, dynamic=dynamic)
 
@@ -343,13 +406,11 @@ class AICore:
             f"история={len(history)} тулов_доступно={len(tools)}"
         )
 
-        # на 'привет'/'спасибо'/болталку тулы не нужны — не даём модели лезть в поиск
         if _is_trivial(turn.text):
             log.info("💤 тривиальное сообщение — отвечаю без инструментов")
             tools = None
 
         for _round in range(MAX_TOOL_ROUNDS):
-            # max_tokens=600: она пишет коротко, больше не нужно - экономим на выводе
             resp = await self.provider.chat(messages, tools=tools, temperature=0.85,
                                             max_tokens=600)
 

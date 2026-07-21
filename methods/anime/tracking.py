@@ -1,3 +1,4 @@
+"""Инструмент: отслеживание просмотренного аниме."""
 from __future__ import annotations
 from sqlalchemy import select
 
