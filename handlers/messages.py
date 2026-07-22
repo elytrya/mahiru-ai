@@ -757,6 +757,31 @@ async def any_message(msg: Message):
     if not text and not images:
         return
 
+    # Он просит глянуть на его экран — делаем скриншот ПРЯМО СЕЙЧАС и прикладываем к Turn
+    if not images and _wants_screen_look(text):
+        try:
+            from utils.screen import capture_screen_jpeg, screen_available
+            if screen_available():
+                shot = capture_screen_jpeg()
+                if shot:
+                    images.append(shot)
+                    text = (text or "").strip() + \
+                        "\n[Он просит посмотреть на его экран — приложен скриншот его экрана прямо сейчас, живо отреагируй на то, что видишь]"
+                    log.info("\U0001f4f8 сделала скриншот по просьбе")
+                else:
+                    text = (text or "").strip() + \
+                        "\n[Он просит посмотреть на экран, но сейчас не получилось сделать снимок — мягко скажи об этом]"
+            else:
+                text = (text or "").strip() + \
+                    "\n[Он просит посмотреть на экран, но доступа к экрану сейчас нет — мягко скажи об этом]"
+        except Exception:
+            log.exception("screen look on demand failed")
+
+    # Он явно просит стикер — отправим его сами (и попросим модель не отнекиваться)
+    if _wants_sticker(text):
+        text = (text or "").strip() + \
+            "\n[Он просит стикер — стикер будет отправлен автоматически. Просто тепло отреагируй одной короткой фразой и НЕ говори, что не умеешь отправлять стикеры.]"
+
     r = msg.reply_to_message
     if r is not None:
         quoted = (r.text or r.caption or "").strip()
@@ -816,6 +841,51 @@ _VOICE_REQ_RE = re.compile(
 def _wants_voice(text: str) -> bool:
     """Явная просьба ответить голосом."""
     return bool(text and _VOICE_REQ_RE.search(text))
+
+
+# Слова про экран — с терпимостью к опечаткам (экран/экрна/екран/монитор/дисплей/screen/скрин/десктоп/рабочий стол)
+_SCREEN_WORD_RE = re.compile(
+    r"(экр\w*|екр\w*|монитор\w*|дисплей\w*|дисплэй\w*|\bscreen\b|скрин\w*|десктоп\w*|рабоч\w+\s+стол\w*)",
+    re.IGNORECASE,
+)
+# Глаголы «посмотреть/глянуть»
+_SCREEN_VERB_RE = re.compile(
+    r"(глян|гляд|взгл|посмотр|смотр|погля|увид|зыр|чекни|зацен)",
+    re.IGNORECASE,
+)
+# «что у меня / чем я занят / что я делаю» — без явного слова «экран»
+_SCREEN_ACTIVITY_RE = re.compile(
+    r"(что (у меня|там у меня|происходит у меня)|чем я (зан|занима)|что я (дела|делаю))",
+    re.IGNORECASE,
+)
+
+
+def _wants_screen_look(text: str) -> bool:
+    """Просьба посмотреть на экран.
+
+    Срабатывает на «глянь на экран», «что у меня на экране?»,
+    «посмотри на мой экрна» (опечатка) и подобное — терпима к опечаткам
+    и порядку слов. Срабатывает, если есть слово про экран, либо связка
+    «глагол-посмотреть + что я делаю».
+    """
+    if not text:
+        return False
+    t = text.lower()
+    if _SCREEN_WORD_RE.search(t):
+        return True
+    return bool(_SCREEN_VERB_RE.search(t) and _SCREEN_ACTIVITY_RE.search(t))
+
+
+# Явная просьба прислать стикер
+_STICKER_REQ_RE = re.compile(
+    r"(стикер\w*|стикос\w*|наклейк\w*|пришли\s+смайл|кинь\s+смайл|отправь\s+смайл)",
+    re.IGNORECASE,
+)
+
+
+def _wants_sticker(text: str) -> bool:
+    """Явная просьба прислать стикер («отправь стикер», «кинь стикерок»)."""
+    return bool(text and _STICKER_REQ_RE.search(text))
 
 
 async def _run_chat(msg: Message, text: str, images: list[bytes] | None) -> None:
@@ -899,3 +969,11 @@ async def _run_chat(msg: Message, text: str, images: list[bytes] | None) -> None
                          force_voice=force_voice)
     if attachments:
         await _send_attachments(msg, attachments)
+
+    # Явная просьба прислать стикер — гарантированно отправляем (с фоллбэком на эмодзи)
+    if _wants_sticker(text):
+        try:
+            from utils import stickers as _stpk
+            await _stpk.send(msg, cur_mood)
+        except Exception:
+            log.exception("forced sticker send failed")

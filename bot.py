@@ -67,6 +67,7 @@ BOT_COMMANDS = [
     BotCommand(command="human",    description="🎭 Очеловечивание (печатает, паузы)"),
     BotCommand(command="humanset", description="🎛 Тонкая настройка поведения"),
     BotCommand(command="date",     description="📅 Памятные даты (поздравляет сама)"),
+    BotCommand(command="screen",   description="👀 Смотрит на экран и комментирует"),
     BotCommand(command="sticker",  description="🏷 Стикеры / кастом-эмодзи"),
     BotCommand(command="set",      description="🌺 Изменить личность"),
     BotCommand(command="keys",     description="🔐 API-ключи провайдеров"),

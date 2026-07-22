@@ -1,4 +1,4 @@
-"""Настройка логирования (loguru."""
+"""Настройка логирования loguru."""
 from __future__ import annotations
 import sys
 from loguru import logger as log
@@ -62,7 +62,7 @@ def setup_logger(level: str = "INFO") -> None:
     )
 
     try:
-        log.level("DEBUG",   icon="🔍", color="<blue>")
+        log.level("DEBUG",   icon="ℹ️", color="<blue>")
         log.level("INFO",    icon="💬", color="<white>")
         log.level("SUCCESS", icon="✨", color="<green>")
         log.level("WARNING", icon="⚠️ ", color="<yellow>")

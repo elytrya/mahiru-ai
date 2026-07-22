@@ -46,11 +46,29 @@ class Settings(BaseSettings):
     MANGADEX_LANG: str = "ru"
     DOWNLOAD_DIR: str = "./downloads"
 
+    # ==== Инициатива: Махиру САМА решает, когда написать / глянуть на экран ====
+    # БОЛЬШЕ НЕТ окон по часам, НЕТ «шансов» и НЕТ лимита «N раз в день».
+    # Каждые INITIATIVE_TICK_MINUTES минут она смотрит на контекст (сколько
+    # прошло времени, о чём говорили, её настроение) и САМА решает: хочет —
+    # напишет или глянет на экран, не хочет — промолчит.
     AUTONOMOUS_ENABLED: bool = True
-    AUTONOMOUS_MIN_HOURS: float = 3.0
-    AUTONOMOUS_MAX_HOURS: float = 12.0
-    AUTONOMOUS_TIME_START: int = 10
-    AUTONOMOUS_TIME_END: int = 23
+    # Как часто она получает «возможность» проявить инициативу (минуты).
+    INITIATIVE_TICK_MINUTES: int = 20
+    # Мягкий предохранитель от спама: не проявлять инициативу чаще, чем раз в N минут.
+    # Это НЕ расписание и НЕ шанс — просто чтоб не заваливала сообщениями подряд.
+    INITIATIVE_MIN_GAP_MINUTES: int = 40
+
+    # ==== Смотрит на экран (screen watch) ====
+    # Махиру САМА, когда захочет (по контексту), заглядывает тебе на экран и живо
+    # комментирует. Никаких окон по часам и лимитов — только её желание.
+    # Также ты сам можешь попросить её «глянь на экран» прямо в чате.
+    # Работает на машине, где запущен бот. Нужен провайдер с vision.
+    SCREEN_WATCH_ENABLED: bool = False
+    # Какой монитор снимать: 0 = все сразу, 1 = первый, 2 = второй...
+    SCREEN_WATCH_MONITOR: int = 0
+    # Скриншот ужимается до этой ширины перед отправкой в vision-модель
+    SCREEN_WATCH_MAX_WIDTH: int = 1280
+    SCREEN_WATCH_JPEG_QUALITY: int = 70
 
     TYPING_INDICATOR: bool = True
     SHOW_TOOL_CALLS: bool = True
@@ -95,8 +113,8 @@ class Settings(BaseSettings):
     VOICE_TORCH_INDEX_URL: str = "https://download.pytorch.org/whl/cpu"
     FFMPEG_BINARY: str = ""
     STICKER_IDS_DEFAULT: str = "6365185259734040633"
+    # Памятные даты: в свой день она сама поздравит, когда захочет (без фикс. часа)
     DATES_ENABLED: bool = True
-    DATES_GREET_HOUR: int = 10
 
     JEALOUSY_ENABLED: bool = True
     JEALOUSY_HOURS: float = 12.0
@@ -106,18 +124,16 @@ class Settings(BaseSettings):
     PETNAMES_ENABLED: bool = True
     PETNAME_THRESHOLD: int = 30
 
+    # Погода-забота: про погоду она вспоминает сама, когда захочет (без фикс. часа)
     WEATHER_ENABLED: bool = True
     OPENWEATHER_API_KEY: str | None = None
     WEATHER_CITY: str = ""
-    WEATHER_MIN_HOUR: int = 8
-    WEATHER_MAX_HOUR: int = 22
-    WEATHER_CARE_HOUR: int = 8
     WEATHER_UNITS: str = "metric"
     WEATHER_LANG: str = "ru"
     MAHIRU_CITY: str = "Токио"
 
+    # Лента жизни: раз в день сама придумывает себе бытовое событие дня (фон)
     LIFE_FEED_ENABLED: bool = True
-    LIFE_FEED_HOUR: int = 9
 
     THREADS_ENABLED: bool = True
     THREAD_ASK_AFTER_HOURS: float = 8.0

@@ -1,6 +1,14 @@
-"""Автономные действия Mahiru по расписанию (инициатива, смена настроения и т.д.)."""
+"""Инициатива Mahiru: она САМА решает, когда написать первой или глянуть на экран.
+
+НИКАКИХ окон по часам, НИКАКИХ «шансов» и лимитов «N раз в день».
+Каждые INITIATIVE_TICK_MINUTES минут собираем контекст и спрашиваем модель:
+хочешь сейчас написать? хочешь глянуть на экран? Хочет — делает, не хочет — молчит.
+Мягкий предохранитель от спама (INITIATIVE_MIN_GAP_MINUTES) — это НЕ расписание, а просто
+чтобы не заваливала сообщениями подряд.
+"""
 from __future__ import annotations
-import random
+import json
+import re
 import datetime as dt
 
 from aiogram import Bot
@@ -13,12 +21,15 @@ from db import repo
 from db.models import User
 from sqlalchemy import select
 from ai.prompts import (build_autonomous_prompt, build_date_greeting_prompt,
-                        build_weather_care_prompt, build_life_event_prompt)
+                        build_life_event_prompt, build_screen_watch_prompt,
+                        build_initiative_decision_prompt)
 from ai.providers.base import ChatMessage
 from utils.weather import get_weather
+from utils.screen import capture_screen_jpeg, screen_available
 from ai.providers.factory import build_provider
 from utils.humanize import dedash
 from utils.logger import log
+
 
 class AutonomousScheduler:
     def __init__(self, bot: Bot):
@@ -27,9 +38,10 @@ class AutonomousScheduler:
         self.provider = build_provider()
 
     def start(self) -> None:
-        self.scheduler.add_job(self._tick, IntervalTrigger(minutes=60))
+        minutes = max(2, int(getattr(settings, "INITIATIVE_TICK_MINUTES", 20)))
+        self.scheduler.add_job(self._tick, IntervalTrigger(minutes=minutes))
         self.scheduler.start()
-        log.info("Autonomous scheduler started")
+        log.info(f"Autonomous scheduler started (tick={minutes}m)")
 
     def shutdown(self) -> None:
         try:
@@ -37,32 +49,69 @@ class AutonomousScheduler:
         except Exception:
             pass
 
+    #  Тик: фоновая лента жизни + инициатива по её желанию            #
     async def _tick(self) -> None:
         now = dt.datetime.now()
 
-        if getattr(settings, "DATES_ENABLED", True) and now.hour == int(getattr(settings, "DATES_GREET_HOUR", 10)):
-            try:
-                await self._greet_dates(now)
-            except Exception:
-                log.exception("date greeting tick failed")
-
-        if getattr(settings, "WEATHER_ENABLED", True):
-            try:
-                await self._greet_weather(now)
-            except Exception:
-                log.exception("weather care tick failed")
-
+        # Фон: раз в день придумывает себе событие дня (без часового окна)
         if getattr(settings, "LIFE_FEED_ENABLED", True):
             try:
                 await self._make_life_event(now)
             except Exception:
                 log.exception("life event tick failed")
 
-        if not (settings.AUTONOMOUS_TIME_START <= now.hour < settings.AUTONOMOUS_TIME_END):
+        # Инициатива: она сама решает, писать ли / глянуть ли на экран
+        autonomous_on = getattr(settings, "AUTONOMOUS_ENABLED", True)
+        screen_on = getattr(settings, "SCREEN_WATCH_ENABLED", False)
+        if not (autonomous_on or screen_on):
             return
-        p_write = 1.0 / max(settings.AUTONOMOUS_MIN_HOURS, 1)
-        if random.random() > p_write:
-            return
+        try:
+            await self._initiative(now, autonomous_on, screen_on)
+        except Exception:
+            log.exception("initiative tick failed")
+
+    #  Вспомогательное                                              #
+    async def _minutes_since_last(self, s, user_id: int):
+        """(минут с последнего сообщения, роль последнего). created_at хранится в UTC."""
+        recent = await repo.recent_messages(s, user_id, limit=1)
+        if not recent:
+            return (10 ** 6, None)
+        last = recent[-1]
+        role = getattr(last, "role", None)
+        ts = getattr(last, "created_at", None)
+        if ts is None:
+            return (10 ** 6, role)
+        try:
+            delta = dt.datetime.utcnow() - ts
+            mins = int(max(0, delta.total_seconds() // 60))
+        except Exception:
+            mins = 10 ** 6
+        return (mins, role)
+
+    def _parse_decision(self, raw: str) -> tuple[bool, bool]:
+        """Извлекаем {write, screen} из ответа модели (толерантно к мусору)."""
+        if not raw:
+            return (False, False)
+        txt = raw.strip()
+        # Попробуем честный JSON
+        try:
+            m = re.search(r"\{.*\}", txt, re.DOTALL)
+            if m:
+                obj = json.loads(m.group(0))
+                return (bool(obj.get("write")), bool(obj.get("screen")))
+        except Exception:
+            pass
+        # Фоллбэк: ищем паттерны "write": true / "screen": true
+        low = txt.lower()
+        write = bool(re.search(r"write\D{0,6}(true|1|yes|да)", low))
+        screen = bool(re.search(r"screen\D{0,6}(true|1|yes|да)", low))
+        return (write, screen)
+
+    async def _initiative(self, now: dt.datetime, autonomous_on: bool,
+                          screen_on: bool) -> None:
+        """Опрашиваем модель по контексту и действуем по её решению."""
+        gap_min = max(0, int(getattr(settings, "INITIATIVE_MIN_GAP_MINUTES", 40)))
+        cam_ok = screen_on and screen_available()
 
         async with SessionLocal() as s:
             res = await s.execute(select(User))
@@ -72,135 +121,169 @@ class AutonomousScheduler:
         for u in users:
             try:
                 async with SessionLocal() as s:
+                    mins, last_role = await self._minutes_since_last(s, u.id)
                     mems = await repo.top_memories(s, u.id, limit=10)
                     recent = await repo.recent_messages(s, u.id, limit=20)
+                    last_init_raw = await repo.get_setting(s, f"initiative:last_min:{u.id}")
+
+                # Мягкий антиспам: не чаще чем раз в gap_min минут (по её инициативе)
+                if last_init_raw:
+                    try:
+                        last_init = dt.datetime.fromisoformat(last_init_raw)
+                        if (dt.datetime.utcnow() - last_init).total_seconds() < gap_min * 60:
+                            continue
+                    except Exception:
+                        pass
+
                 recent_topics = [
                     (m.content or "").strip()[:80]
                     for m in recent
                     if getattr(m, "role", None) == "user" and (m.content or "").strip()
                 ][-6:]
-                prompt = build_autonomous_prompt(personality, mems, recent_topics=recent_topics)
-                resp = await self.provider.chat(
-                    [ChatMessage("system", prompt),
-                     ChatMessage("user", "Напиши мне первой сейчас.")],
-                    temperature=0.9, max_tokens=200,
+
+                # Специальное событие сегодня (дата) — отдаём в контекст решения
+                special = await self._special_today(u.id, now)
+
+                # Решение модели (только текст, без картинки)
+                dprompt = build_initiative_decision_prompt(
+                    personality, mins, last_role, recent_topics=recent_topics,
+                    special_today=special, screen_available=cam_ok,
                 )
-                text = dedash((resp.text or "").strip())
-                if text:
-                    await self.bot.send_message(u.tg_id, text)
-                    async with SessionLocal() as s:
-                        await repo.add_message(s, u.id, "assistant", text,
-                                               meta={"autonomous": True})
-            except Exception:
-                log.exception("autonomous send failed")
-
-    async def _weather_due(self, now: dt.datetime) -> bool:
-        """Каждый день выбираем СЛУЧАЙНЫЙ час (в окне WEATHER_MIN_HOUR..WEATHER_MAX_HOUR),
-        чтобы писала про погоду в разное время, а не по будильнику."""
-        today = now.date().isoformat()
-        key = f"weather_day_hour:{today}"
-        async with SessionLocal() as s:
-            raw = await repo.get_setting(s, key)
-        if raw is None:
-            lo = int(getattr(settings, "WEATHER_MIN_HOUR", 8))
-            hi = int(getattr(settings, "WEATHER_MAX_HOUR", 22))
-            if hi < lo:
-                lo, hi = 8, 22
-            target = random.randint(lo, hi)
-            async with SessionLocal() as s:
-                await repo.set_setting(s, key, str(target))
-        else:
-            try:
-                target = int(raw)
-            except (TypeError, ValueError):
-                target = 8
-        return now.hour >= target
-
-    async def _greet_weather(self, now: dt.datetime) -> None:
-        """Забота про погоду: сама напишет про погоду в городе владельца, раз в день в случайное время."""
-        if not await self._weather_due(now):
-            return
-        w = await get_weather()
-        if not w:
-            return
-        today = now.date().isoformat()
-        async with SessionLocal() as s:
-            personality = await repo.get_personality(s)
-            res = await s.execute(select(User))
-            users = list(res.scalars().all())
-        for u in users:
-            guard = f"weather_greeted:{u.id}:{today}"
-            async with SessionLocal() as s:
-                if await repo.get_setting(s, guard):
+                dresp = await self.provider.chat(
+                    [ChatMessage("system", dprompt),
+                     ChatMessage("user", "Решай сейчас. Только JSON.")],
+                    temperature=0.8, max_tokens=40,
+                )
+                want_write, want_screen = self._parse_decision(dresp.text or "")
+                if not autonomous_on:
+                    want_write = False
+                if not cam_ok:
+                    want_screen = False
+                if not (want_write or want_screen):
                     continue
-            try:
-                prompt = build_weather_care_prompt(
-                    personality, w.get("city", ""), w.get("desc", ""),
-                    w.get("temp"), w.get("advice", ""),
-                )
-                resp = await self.provider.chat(
-                    [ChatMessage("system", prompt),
-                     ChatMessage("user", "Напиши мне про погоду сейчас.")],
-                    temperature=0.9, max_tokens=200,
-                )
-                text = dedash((resp.text or "").strip())
-                if text:
-                    await self.bot.send_message(u.tg_id, text)
-                    async with SessionLocal() as s:
-                        await repo.add_message(s, u.id, "assistant", text,
-                                               meta={"weather_care": today})
-                        await repo.set_setting(s, guard, "1")
-            except Exception:
-                log.exception("weather care send failed")
 
-    async def _greet_dates(self, now: dt.datetime) -> None:
-        """Поздравляет с днями рождения/годовщинами, один раз в день на каждую дату."""
+                sent = False
+                # Сначала экран (она решила подглядеть)
+                if want_screen:
+                    sent = await self._comment_screen(u, personality, now)
+                # Иначе просто напишет первой
+                if not sent and want_write:
+                    sent = await self._write_first(u, personality, mems,
+                                                   recent_topics, special, now)
+
+                if sent:
+                    async with SessionLocal() as s:
+                        await repo.set_setting(
+                            s, f"initiative:last_min:{u.id}",
+                            dt.datetime.utcnow().isoformat(),
+                        )
+            except Exception:
+                log.exception("initiative per-user failed")
+
+    async def _special_today(self, user_id: int, now: dt.datetime):
+        """Если сегодня памятная дата (ещё не отмечена) — вернём краткое описание."""
+        if not getattr(settings, "DATES_ENABLED", True):
+            return None
         today = now.date().isoformat()
         async with SessionLocal() as s:
-            personality = await repo.get_personality(s)
             dates = await repo.dates_on(s, now.month, now.day)
-        if not dates:
-            return
-        async with SessionLocal() as s:
-            res = await s.execute(select(User))
-            users = {u.id: u for u in res.scalars().all()}
-        for d in dates:
-            u = users.get(d.user_id)
-            if not u:
-                continue
-            guard = f"date_greeted:{d.id}:{today}"
-            async with SessionLocal() as s:
+            for d in dates:
+                if d.user_id != user_id:
+                    continue
+                guard = f"date_greeted:{d.id}:{today}"
                 if await repo.get_setting(s, guard):
                     continue
-            years = None
-            if d.year:
-                y = now.year - int(d.year)
-                years = y if y > 0 else None
-            try:
+                kind_word = {"birthday": "день рождения",
+                             "anniversary": "годовщина"}.get(d.kind, "важная дата")
+                return f"{kind_word} — {d.title}"
+        return None
+
+    #  Действия                                                        #
+    async def _write_first(self, u: User, personality, mems, recent_topics,
+                           special, now: dt.datetime) -> bool:
+        """Написать первой. Если сегодня памятная дата — поздравит."""
+        try:
+            # Если сегодня дата — превратим в поздравление и пометим дату выполненной
+            date_obj = await self._pop_date_for_greeting(u.id, now)
+            if date_obj is not None:
+                d, years = date_obj
                 prompt = build_date_greeting_prompt(personality, d.title, d.kind, years)
-                resp = await self.provider.chat(
-                    [ChatMessage("system", prompt),
-                     ChatMessage("user", "Поздравь меня сейчас.")],
-                    temperature=0.9, max_tokens=200,
-                )
-                text = dedash((resp.text or "").strip())
-                if text:
-                    await self.bot.send_message(u.tg_id, text)
-                    async with SessionLocal() as s:
-                        await repo.add_message(s, u.id, "assistant", text,
-                                               meta={"date_greeting": d.id})
-                        await repo.set_setting(s, guard, "1")
-            except Exception:
-                log.exception("date greeting failed")
+                user_line = "Поздравь меня сейчас."
+                meta = {"date_greeting": d.id}
+            else:
+                prompt = build_autonomous_prompt(personality, mems, recent_topics=recent_topics)
+                user_line = "Напиши мне первой сейчас."
+                meta = {"autonomous": True}
+            resp = await self.provider.chat(
+                [ChatMessage("system", prompt),
+                 ChatMessage("user", user_line)],
+                temperature=0.9, max_tokens=200,
+            )
+            text = dedash((resp.text or "").strip())
+            if not text:
+                return False
+            await self.bot.send_message(u.tg_id, text)
+            async with SessionLocal() as s:
+                await repo.add_message(s, u.id, "assistant", text, meta=meta)
+            return True
+        except Exception:
+            log.exception("write_first failed")
+            return False
+
+    async def _pop_date_for_greeting(self, user_id: int, now: dt.datetime):
+        """Если есть неотмеченная дата на сегодня — помечаем её и возвращаем (date, years)."""
+        if not getattr(settings, "DATES_ENABLED", True):
+            return None
+        today = now.date().isoformat()
+        async with SessionLocal() as s:
+            dates = await repo.dates_on(s, now.month, now.day)
+            for d in dates:
+                if d.user_id != user_id:
+                    continue
+                guard = f"date_greeted:{d.id}:{today}"
+                if await repo.get_setting(s, guard):
+                    continue
+                await repo.set_setting(s, guard, "1")
+                years = None
+                if d.year:
+                    y = now.year - int(d.year)
+                    years = y if y > 0 else None
+                return (d, years)
+        return None
+
+    async def _comment_screen(self, u: User, personality, now: dt.datetime) -> bool:
+        """Сама заглянула на экран и живо прокомментировала. Нужен vision-провайдер."""
+        try:
+            shot = capture_screen_jpeg()
+            if not shot:
+                log.info("screen watch: экран недоступен - пропускаю")
+                return False
+            prompt = build_screen_watch_prompt(personality)
+            resp = await self.provider.chat(
+                [ChatMessage("system", prompt),
+                 ChatMessage("user", "Посмотри, что у меня сейчас на экране, и отреагируй.",
+                             images=[shot])],
+                temperature=0.9, max_tokens=200,
+            )
+            text = dedash((resp.text or "").strip())
+            if not text:
+                return False
+            await self.bot.send_message(u.tg_id, text)
+            async with SessionLocal() as s:
+                await repo.add_message(s, u.id, "assistant", text,
+                                       meta={"screen_watch": now.date().isoformat()})
+            return True
+        except Exception:
+            log.exception("screen watch send failed")
+            return False
 
     async def _make_life_event(self, now: dt.datetime) -> None:
-        """Раз в день придумывает себе бытовое событие дня (лента жизни).
+        """Раз в день придумывает себе бытовое событие дня (лента жизни, фон).
 
-        Не отправляется пользователю - хранится в Setting и всплывает в контексте,
+        Не отправляется пользователю — хранится в Setting и всплывает в контексте,
         чтобы Махиру могла невзначай упомянуть свой день в переписке.
+        Без часового окна: первый тик за день — и готово.
         """
-        if now.hour < int(getattr(settings, "LIFE_FEED_HOUR", 9)):
-            return
         today = now.date().isoformat()
         async with SessionLocal() as s:
             if await repo.get_setting(s, f"life_event_done:{today}"):

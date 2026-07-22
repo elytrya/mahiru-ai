@@ -91,17 +91,6 @@ async def weather_cmd(msg: Message):
         await set_key("OPENWEATHER_API_KEY", arg)
         await msg.answer("Ок, ключ OpenWeather сохранён ✅")
         return
-    if sub in ("window", "окно", "hours") and arg:
-        nums = [x for x in arg.replace("-", " ").split() if x.strip().isdigit()]
-        if len(nums) >= 2:
-            lo, hi = int(nums[0]), int(nums[1])
-            if 0 <= lo <= 23 and 0 <= hi <= 23 and lo <= hi:
-                await set_behavior("WEATHER_MIN_HOUR", str(lo))
-                await set_behavior("WEATHER_MAX_HOUR", str(hi))
-                await msg.answer(f"Ок, окно случайного времени погоды: <b>{lo}:00-{hi}:00</b> ✅")
-                return
-        await msg.answer("Формат: <code>/weather window 8 22</code> (от и до, часы 0..23)")
-        return
     if sub in ("on", "off", "вкл", "выкл"):
         await set_behavior("WEATHER_ENABLED", "on" if sub in ("on", "вкл") else "off")
         state = "включена" if getattr(settings, "WEATHER_ENABLED", True) else "выключена"
@@ -117,8 +106,6 @@ async def weather_cmd(msg: Message):
 
     enabled = "да" if getattr(settings, "WEATHER_ENABLED", True) else "нет"
     city = getattr(settings, "WEATHER_CITY", "") or "(не задан)"
-    lo = getattr(settings, "WEATHER_MIN_HOUR", 8)
-    hi = getattr(settings, "WEATHER_MAX_HOUR", 22)
     has_key = "есть" if await get_key("OPENWEATHER_API_KEY") else "нет"
     w = await get_weather()
     now_line = ("\nСейчас: " + format_weather(w)) if w else ""
@@ -127,14 +114,63 @@ async def weather_cmd(msg: Message):
         f"Включена: <b>{enabled}</b>\n"
         f"Город: <b>{city}</b>\n"
         f"Ключ API: <b>{has_key}</b>\n"
-        f"Пишет раз в день в случайное время: <b>{lo}:00-{hi}:00</b>"
+        "Про погоду она вспоминает <b>сама, когда захочет</b> (без часов и расписания)"
         + now_line +
         "\n\nКоманды:\n"
         "<code>/weather city Москва</code> - город\n"
         "<code>/weather key &lt;APIKEY&gt;</code> - ключ OpenWeather\n"
-        "<code>/weather window 8 22</code> - окно случайного времени\n"
         "<code>/weather on</code> / <code>/weather off</code>\n"
         "<code>/weather test</code> - проверить сейчас"
+    )
+
+
+@router.message(Command("screen"))
+async def screen_cmd(msg: Message):
+    """Смотрит на экран: вкл/выкл, монитор, тест. Когда смотреть — решает САМА."""
+    if not is_admin(msg.from_user.id):
+        return
+    parts = (msg.text or "").split(maxsplit=2)
+    sub = parts[1].lower() if len(parts) > 1 else ""
+    arg = parts[2].strip() if len(parts) > 2 else ""
+
+    if sub in ("on", "off", "вкл", "выкл"):
+        await set_behavior("SCREEN_WATCH_ENABLED", "on" if sub in ("on", "вкл") else "off")
+        state = "включено" if getattr(settings, "SCREEN_WATCH_ENABLED", False) else "выключено"
+        await msg.answer(f"Подглядывание за экраном теперь <b>{state}</b> ✅\nКогда смотреть — она решает сама, по контексту.")
+        return
+    if sub in ("monitor", "монитор", "экран") and arg:
+        if arg.isdigit():
+            await set_behavior("SCREEN_WATCH_MONITOR", arg)
+            await msg.answer(f"Ок, буду снимать монитор <b>{arg}</b> (0 = все сразу) ✅")
+            return
+        await msg.answer("Формат: <code>/screen monitor 1</code> (0 = все, 1 = первый, 2 = второй...)")
+        return
+    if sub == "test":
+        from utils.screen import capture_screen_jpeg
+        from aiogram.types import BufferedInputFile
+        shot = capture_screen_jpeg()
+        if not shot:
+            await msg.answer("Не смогла снять экран 😢 (нет граф. среды/прав или не установлен mss/Pillow). Проверь, что бот запущен на компьютере с монитором.")
+            return
+        await msg.answer_photo(BufferedInputFile(shot, filename="screen.jpg"), caption="Вот что я сейчас вижу 👀")
+        return
+
+    from utils.screen import screen_available
+    enabled = "да" if getattr(settings, "SCREEN_WATCH_ENABLED", False) else "нет"
+    mon = getattr(settings, "SCREEN_WATCH_MONITOR", 0)
+    avail = "доступен" if screen_available() else "недоступен сейчас"
+    await msg.answer(
+        "👀 <b>Смотрит на экран</b>\n"
+        f"Включено: <b>{enabled}</b>\n"
+        f"Монитор: <b>{mon}</b> (0 = все сразу)\n"
+        f"Экран сейчас: <b>{avail}</b>\n\n"
+        "Махиру заглядывает на экран <b>сама, когда захочет</b> (по контексту, без часов и лимитов).\n"
+        "Также ты можешь просто написать ей «глянь на экран» — и она посмотрит.\n"
+        "Нужен AI-провайдер с поддержкой картинок (gemini, gpt-4o и т.п.).\n\n"
+        "Команды:\n"
+        "<code>/screen on</code> / <code>/screen off</code>\n"
+        "<code>/screen monitor 1</code> - какой монитор снимать\n"
+        "<code>/screen test</code> - снять экран сейчас"
     )
 
 

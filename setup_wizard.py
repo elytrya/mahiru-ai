@@ -148,7 +148,7 @@ def step_telegram(data: dict) -> None:
 
 G4F_MODELS = [
     ("gpt-4o-mini",       "быстро, качественно - лучший выбор для чата"),
-    ("gpt-4o",            "тот же GPT-4o, мощнее и медленнее"),
+    ("gpt-4o",            "тот же GPT-4o, мо����ее и медленнее"),
     ("claude-3-5-sonnet", "Anthropic Claude 3.5 Sonnet"),
     ("llama-3.1-70b",     "Meta Llama 3.1 70B - open-source"),
     ("gemini-pro",        "Google Gemini Pro"),
@@ -304,7 +304,8 @@ def step_google(data: dict) -> None:
         data["OPENWEATHER_API_KEY"] = wkey
         data["WEATHER_CITY"] = ask("В каком городе ты живёшь? (напр. Москва)")
         data["WEATHER_ENABLED"] = "true"
-        data["WEATHER_CARE_HOUR"] = ask_number("В какой час писать про погоду (0..23)", "8", "int")
+        p("")
+        p("    Про погоду она вспоминает САМА, когда захочет — без часов и расписания.")
     else:
         data["WEATHER_ENABLED"] = "false"
 
@@ -334,7 +335,7 @@ def step_human(data: dict) -> None:
     if hum:
         data["TYPING_SPEED_CPS"] = ask_number("Скорость набора (симв/сек, меньше = дольше печатает)", "14", "float")
         p("")
-        p("3) Разбивать длинный ответ на несколько сообщений (как живой человек).")
+        p("3) Разбивать длинный ответ на нескольк���� сообщений (как живой ч��ловек).")
         data["SPLIT_MESSAGES"] = "true" if ask_bool("Разбивать на сообщения?", True) else "false"
         p("")
         p("4) Иногда 'занята' и отвечает заметно позже (шанс 0..1, напр. 0.12 = 12%).")
@@ -377,20 +378,57 @@ def step_human(data: dict) -> None:
     dts = ask_bool("Включить памятные даты?", True)
     data["DATES_ENABLED"] = "true" if dts else "false"
     if dts:
-        data["DATES_GREET_HOUR"] = ask_number("В какой час поздравлять (0..23)", "10", "int")
+        p("")
+        p("   В свой день она сама поздравит, когда захочет — без фиксированного часа.")
 
 def step_autonomous(data: dict) -> None:
     hr()
-    p("Автономные сообщения (опционально)")
+    p("Инициатива: она САМА решает, когда писать первой (опционально)")
     p("")
-    p("Может ли Mahiru писать первой? Интервалы в часах, можно дробные (0.5 = 30 мин).")
+    p("Может ли Mahiru писать первой? НИКАКИХ окон по часам, шансов и лимитов.")
+    p("Она смотрит на контекст (сколько прошло, о чём говорили) и сама решает:")
+    p("хочет — напишет, не хочет — промолчит.")
     on = ask_bool("Включить?", True)
     data["AUTONOMOUS_ENABLED"] = "true" if on else "false"
     if on:
-        data["AUTONOMOUS_TIME_START"] = ask_number("С какого часа (0..23)", "10", "int")
-        data["AUTONOMOUS_TIME_END"]   = ask_number("До какого часа (0..23)", "23", "int")
-        data["AUTONOMOUS_MIN_HOURS"]  = ask_number("Мин. интервал (часы)", "3", "float")
-        data["AUTONOMOUS_MAX_HOURS"]  = ask_number("Макс. интервал (часы)", "12", "float")
+        p("")
+        p("Как часто она получает 'возможность' проявить инициативу (минуты).")
+        data["INITIATIVE_TICK_MINUTES"] = ask_number("Проверять каждые (мин)", "20", "int")
+        p("")
+        p("Мягкий предохранитель от спама: не писать по своей инициативе чаще, чем раз в N мин.")
+        p("(Это НЕ расписание и НЕ шанс — просто чтоб не заваливала подряд.)")
+        data["INITIATIVE_MIN_GAP_MINUTES"] = ask_number("Мин. пауза между её инициативами (мин)", "40", "int")
+
+def step_screen(data: dict) -> None:
+    hr()
+    p("Смотрит на экран 👀 (опционально)")
+    p("")
+    p("Махиру САМА, когда захочет (по контексту), заглядывает на твой экран и живо")
+    p("комментирует: 'опять в доту залип?', 'что за аниме смотришь?'.")
+    p("НИКАКИХ окон по часам и лимитов — только её желание.")
+    p("Также ты сам можешь написать ей 'глянь на экран' — и она посмотрит.")
+    p("Скриншот уходит в vision-модель (gemini, openai gpt-4o, g4f с vision и т.п.).")
+    p("ВАЖНО: снимок делается на том компьютере, где ЗАПУЩЕН бот - он видит")
+    p("именно ЭТОТ экран. На сервере без монитора работать не будет.")
+    p("")
+    on = ask_bool("Включить подглядывание за экраном?", False)
+    data["SCREEN_WATCH_ENABLED"] = "true" if on else "false"
+    if not on:
+        return
+    p("")
+    p("Какой монитор снимать? 0 = все сразу, 1 = первый, 2 = второй...")
+    data["SCREEN_WATCH_MONITOR"] = ask_number("Номер монитора", "0", "int")
+    # Быстрая проверка: получится ли снять экран прямо сейчас
+    try:
+        sys.path.insert(0, str(ROOT))
+        from utils.screen import screen_available
+        if screen_available():
+            p("  ok, экран вижу - тестовый скриншот получился ✅")
+        else:
+            p("  ! не смогла снять экран сейчас (нет граф. среды/прав или не установлен mss).")
+            p("    Если это твой ПК - скорее всего заработает после установки зависимостей.")
+    except Exception as e:
+        p(f"  (проверку экрана пропускаю: {e})")
 
 def save_env(data) -> None:
     def g(k, d=""): return data.get(k, d)
@@ -433,7 +471,6 @@ def save_env(data) -> None:
         "# ==== Погода-забота (OpenWeather) ====",
         f"WEATHER_ENABLED={g('WEATHER_ENABLED', 'true')}",
         f"WEATHER_CITY={g('WEATHER_CITY', '')}",
-        f"WEATHER_CARE_HOUR={g('WEATHER_CARE_HOUR', '8')}",
         f"WEATHER_UNITS={g('WEATHER_UNITS', 'metric')}",
         f"WEATHER_LANG={g('WEATHER_LANG', 'ru')}",
         "",
@@ -473,14 +510,18 @@ def save_env(data) -> None:
         f"STICKER_CHANCE={g('STICKER_CHANCE', '0.15')}",
         f"STICKER_IDS_DEFAULT={g('STICKER_IDS_DEFAULT', '6365185259734040633')}",
         f"DATES_ENABLED={g('DATES_ENABLED', 'true')}",
-        f"DATES_GREET_HOUR={g('DATES_GREET_HOUR', '10')}",
         "",
-        "# ==== Autonomous ====",
+        "# ==== Инициатива: она САМА решает, когда писать / глянуть на экран ====",
+        "# БОЛЬШЕ НЕТ окон по часам, шансов и лимитов «N раз в день».",
         f"AUTONOMOUS_ENABLED={g('AUTONOMOUS_ENABLED', 'true')}",
-        f"AUTONOMOUS_MIN_HOURS={g('AUTONOMOUS_MIN_HOURS', '3')}",
-        f"AUTONOMOUS_MAX_HOURS={g('AUTONOMOUS_MAX_HOURS', '12')}",
-        f"AUTONOMOUS_TIME_START={g('AUTONOMOUS_TIME_START', '10')}",
-        f"AUTONOMOUS_TIME_END={g('AUTONOMOUS_TIME_END', '23')}",
+        f"INITIATIVE_TICK_MINUTES={g('INITIATIVE_TICK_MINUTES', '20')}",
+        f"INITIATIVE_MIN_GAP_MINUTES={g('INITIATIVE_MIN_GAP_MINUTES', '40')}",
+        "",
+        "# ==== Смотрит на экран (screen watch) — когда смотреть, решает сама ====",
+        f"SCREEN_WATCH_ENABLED={g('SCREEN_WATCH_ENABLED', 'false')}",
+        f"SCREEN_WATCH_MONITOR={g('SCREEN_WATCH_MONITOR', '0')}",
+        f"SCREEN_WATCH_MAX_WIDTH={g('SCREEN_WATCH_MAX_WIDTH', '1280')}",
+        f"SCREEN_WATCH_JPEG_QUALITY={g('SCREEN_WATCH_JPEG_QUALITY', '70')}",
         "",
         f"LOG_LEVEL={g('LOG_LEVEL', 'INFO')}",
         "",
@@ -533,6 +574,7 @@ def main() -> None:
     step_ui(data)
     step_human(data)
     step_autonomous(data)
+    step_screen(data)
 
     save_env(data)
     p("")
