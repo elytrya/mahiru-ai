@@ -1,105 +1,167 @@
 # mahiru-ai
 
 <p align="center">
-  <img src="assets/avatar.png" alt="Mahiru AI" width="600">
+  <img src="assets/avatar.png" alt="mahiru ai" width="600">
 </p>
 
-<Живая> виртуальная девушка-компаньонка в Telegram:
-своя личность и вкусы, память, живое настроение, пишет первой. Анимешница и геймерша: говорит про
-аниме/мангу/манхву/игры со своим мнением, качает мангу/ранобэ с MangaLib, знает цены и отзывы Steam,
-гуглит, понимает картинки. 
+**живая виртуальная девушка-компаньонка в telegram.** своя личность, характер и вкусы,
+память, живое настроение и - главное - своё поведение: пишет первой, ревнует, обижается,
+скучает, придумывает ласковые прозвища, шлёт стикеры и голосовые. анимешница и геймерша:
+говорит про аниме/мангу/манхву/ранобэ/игры со своим мнением, качает мангу и ранобэ с *lib,
+знает цены и отзывы steam, гуглит, понимает картинки и даже комментирует твой экран.
 
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[![GitHub latest commit](https://badgen.net/github/last-commit/Elytrya/mahiru-ai)](https://GitHub.com/Elytrya/mahiru-ai/commit/)
-[![GitHub branches](https://badgen.net/github/branches/Elytrya/mahiru-ai)](https://github.com/Elytrya/mahiru-ai/)
-[![GitHub commits](https://badgen.net/github/commits/Elytrya/mahiru-ai)](https://GitHub.com/Elytrya/mahiru-ai/commit/)
-[![GitHub issues](https://badgen.net/github/issues/Elytrya/mahiru-ai/)](https://GitHub.com/Elytrya/mahiru-ai/issues/)
+[![license: gpl v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![github latest commit](https://badgen.net/github/last-commit/Elytrya/mahiru-ai)](https://GitHub.com/Elytrya/mahiru-ai/commit/)
+[![github branches](https://badgen.net/github/branches/Elytrya/mahiru-ai)](https://github.com/Elytrya/mahiru-ai/)
+[![github commits](https://badgen.net/github/commits/Elytrya/mahiru-ai)](https://GitHub.com/Elytrya/mahiru-ai/commit/)
+[![github issues](https://badgen.net/github/issues/Elytrya/mahiru-ai/)](https://GitHub.com/Elytrya/mahiru-ai/issues/)
 
-## Фичи
+---
 
-- **Живой характер-партнёр**: ведёт себя как настоящий человек со своими потребностями, мнением и настроением, "
-а не как услужливый ассистент. Может отказаться отвечать, капризничать, сама делится впечатлениями.
-- **Агентная архитектура**: Telegram → AI Core → tool-loop → tools (Anime, MangaLib, Steam, Web, Memory, Vision).
-- **Единый интерфейс провайдеров**: Gemini, OpenAI, Claude, DeepSeek, Ollama, **g4f (gpt4free - бесплатно, без ключей)**.
-- **Быстрый g4f**: кэш последней рабочей пары (провайдер+модель), параллельная гонка провайдеров с забором первого успешного, жёсткие таймауты и отсев дохлых бэкэндов.
-- **Личность в БД**: имя, возраст, характер, стиль, речь, интересы, эмоциональность - редактируется `/set`.
-- **Умная память**: LLM-экстрактор вытаскивает важные факты (importance ≥ 60), retrieval по релевантности.
-- **Tools**: `web_search`/`google_search`, `anime_search/info`, `lib_search/info/download` (MangaLib - манга/ранобэ/хентай в PDF/CBZ/EPUB/TXT), `steam_search/game/reviews`, `memory_save`, `image_vision`.
-- **Скачивание с MangaLib кнопками**: выбор тайтла и глав, формат на выбор; упавшие главы пропускаются, а не рвут весь докач.
-- **Steam живым диалогом**: цены/скидки с реакцией, поиск угарных отзывов (в т.ч. по случайной игре) с кнопками «другая игра / ещё отзыв».
-- **Mood system**: happy / sad / tired / excited / curious / annoyed / playful / loving - влияет на тон, дрейфует и плавно восстанавливается к нейтральному, не залипая.
-- **Автономные сообщения**: APScheduler в расписании, сама пишет первой - делится, что дочитала/прошла, или просто скучает.
-- **Админка в Telegram**: `/admin` - Личность, Память, AI, Провайдер, Статистика, Очистка, Экспорт.
-- **Кнопка инструментов**: при `SHOW_TOOL_CALLS=true` под ответом/файлом показывается, какой тул был вызван.
-- **Стек**: Python 3.12, aiogram 3, SQLAlchemy 2 (async), Redis
+## что умеет
 
-## Быстрый старт (туториал)
+### живой характер, а не ассистент
+- **ведёт себя как настоящий человек**: своё мнение, потребности, капризы. может не ответить, надуться, сама поделиться впечатлениями. говорит от первого лица, часто упоминает себя.
+- **типажи характера (режимы)** - базовый тон личности, переключается на лету:
+  - **влюблённая** (`loving`) · **милашка/дередере** (`deredere`) · **цундере** (`tsundere`)
+  - **яндере** (`yandere`, художественный отыгрыш - только на словах) · **куудере** (`kuudere`)
+  - **отстранённая** (`distant`) · **игривая** (`playful`)
+- **стадия отношений** - влияет на близость тона: *только познакомились → неделя → месяц → полгода → год → давно вместе*.
+- **ревность двух видов**: обижается, если долго молчишь, **и** ревнует к другим девушкам - если замечает соперницу в переписке, на присланной картинке или у тебя на экране (сила: `soft` / `normal` / `strong`).
+- **близость и пет-неймы**: уровень близости копится со временем и разблокирует более тёплый тон и ласковые прозвища.
+- **энергия/батарейка**: к ночи «устаёт», сообщения короче и мягче.
+- **обидки (sulk)**: может подуться после ссоры/долгого игнора, потом отходит.
 
-### 1. Скачай проект
+### очеловечивание
+- **печатает по-человечески**: индикатор «печатает…», паузы под скорость набора, дробит длинные ответы на несколько сообщений.
+- **эмодзи-реакции** на твои сообщения, **опечатки** с самоисправлением (`*то есть`), «прочитала, но молчит пару минут».
+- **стикеры и кастом-эмодзи** по настроению.
+- **голосовые сообщения** (silero tts, опционально) - иногда отвечает голосом. (звучит ужасно, в следующих обновлениях обязательно подправлю!)
+- **настроение (mood)**: happy / sad / tired / excited / curious / annoyed / playful / loving / jealous - влияет на тон, плавно дрейфует и восстанавливается, залипает по-живому на пару часов.
 
+### инициатива и «своя жизнь»
+- **сама решает, когда написать первой** - никаких окон по часам и лимитов: каждые ~20 мин смотрит на контекст и решает, хочет ли написать.
+- **смотрит на экран** (screen watch): сама, по желанию, заглядывает на твой монитор и комментирует (нужен провайдер с vision).
+- **лента жизни**: раз в день сама придумывает себе бытовое событие («досмотрела аниме», «ходила на пары»).
+- **возвращение**: если тебя долго не было - встречает по-особому.
+- **памятные даты**: в нужный день сама поздравит.
+- **погода-забота**: «там у тебя дождь, возьми зонтик» (нужен ключ openweather и город).
+- **темы-хвосты**: может вернуться к тому, о чём вы говорили раньше.
+
+### инструменты (tools)
+ai сама вызывает нужный инструмент в tool-loop:
+- `web_search`, `google_search` - поиск в интернете
+- `anime_search`, `anime_info`, `anime_tracking` - аниме со своим мнением + трекинг
+- `lib_search`, `lib_info`, `lib_download` - mangalib / ranobelib / hentailib: манга/ранобэ/хентай в **pdf / cbz / epub / txt** кнопками (выбор тайтла, глав и формата; упавшие главы пропускаются, а не рвут докачку)
+- `steam_search`, `steam_game`, `steam_reviews` - цены/скидки с реакцией и угарные отзывы (кнопки «другая игра / ещё отзыв»)
+- `memory_save` - сохранить важный факт
+- `image_vision` - понимает присланные картинки
+- `weather` - погода
+- `request_api_key` - сама попросит недостающий ключ, когда он нужен
+
+### архитектура и провайдеры
+- **агентная схема**: telegram → ai core → tool-loop → tools (anime, *lib, steam, web, weather, memory, vision).
+- **единый интерфейс провайдеров**: `gemini` · `openai` · `claude` · `deepseek` · `ollama` · `yandex` · **`g4f` (gpt4free - бесплатно, без ключей)**.
+- **быстрый g4f**: кэш последней рабочей пары (провайдер+модель), параллельная гонка бэкэндов с забором первого успешного, жёсткие таймауты и отсев дохлых.
+- **ollama**: может сам поставить/запустить/подтянуть локальную модель.
+- **личность в бд**: имя, возраст, характер, стиль, речь, интересы, эмоциональность - редактируется `/set`.
+- **умная память**: llm-экстрактор вытаскивает важные факты и достаёт их по релевантности.
+- **устойчивая сеть**: авто-восстановление подключения - при обрыве связи с telegram (частый «превышен таймаут семафора» на windows / при блокировках) бот сам пересоздаёт сессию и переподключается, **ручной перезапуск не нужен**. при желании можно пустить трафик через прокси (`TELEGRAM_PROXY`, поддержка socks5).
+
+**стек**: python 3.12, aiogram 3, sqlalchemy 2 (async), redis (опционально), pillow + mss (скриншоты), silero (голос).
+
+---
+
+## быстрый старт
+
+### 1. скачай проект
 ```bash
-git clone <свой репо> mahiru && cd mahiru
-# или распакуй mahiru.zip
+git clone https://github.com/elytrya/mahiru-ai mahiru && cd mahiru
+# или распакуй архив с проектом
 ```
 
-### 2. Запусти мастер настройки
-
+### 2. запусти мастер настройки
 ```bash
 python setup_wizard.py
 ```
+мастер проведёт по шагам прямо в консоли:
+1. **telegram** - `BOT_TOKEN` (@botfather) и твой `ADMIN_IDS` (@userinfobot).
+2. **ai-провайдер** - `g4f` (бесплатно, без ключей) / `gemini` / `openai` / `claude` / `deepseek` / `yandex` (с ключом и <Я не могу обсуждать эту тему. Давайте поговорим о чём-нибудь ещё>) / `ollama` (локально).
+3. **база данных** - sqlite (файл) / postgresql / custom.
+4. **google search** - опционально (без него не полезет в интернет).
+5. **поведение / очеловечивание** - печатает, паузы, реакции и т.п.
+6. **характер** - типаж (влюблённая, цундере, яндере…) и стадия отношений.
+7. **инициатива** - как часто может писать первой.
+8. **экран** - разрешить ли смотреть на монитор.
 
-Мастер проведёт через 7 шагов прямо в консоли:
+в конце мастер сам предложит `pip install -r requirements.txt` и запуск `python bot.py`.
+если запустить `python bot.py` без `.env` - бот сам предложит мастер.
 
-1. **Telegram** - `BOT_TOKEN` (@BotFather) и твой `ADMIN_IDS` (@userinfobot).
-2. **AI-провайдер** - выбери из списка:
-   - `g4f` - бесплатно, без ключей ([xtekky/gpt4free](https://github.com/xtekky/gpt4free))
-   - `gemini` / `openai` / `claude` / `deepseek` - с API-ключом
-   - `ollama` - локальные модели
-3. **БД** - SQLite (файл) / PostgreSQL / custom.
-4. **Google Search** - опционально (без него бот не полезет в интернет).
-5. **Автономные сообщения** - окно времени и частота.
-6. **`pip install -r requirements.txt`** - мастер сам предложит.
-7. **Запуск** - `python bot.py`.
+### 3. напиши боту `/start`
+готово (* ^ ω ^)
 
-Если запустишь `python bot.py` без `.env` - бот сам предложит запустить мастер.
+---
 
-### 3. Напиши боту `/start` в Telegram
+## команды
 
-Готово. Админка - `/admin`. Редактировать личность - `/set name Mahiru`, `/set character "милая, дерзкая"`.
+| команда | что делает |
+|---|---|
+| `/start` | начать общение |
+| `/admin` | панель настроек (инлайн-кнопки) |
+| `/set` | изменить личность (`/set name Mahiru`, `/set character "милая, дерзкая"`) |
+| `/human` | очеловечивание (печатает, паузы, реакции) |
+| `/humanset` | тонкая настройка поведения (`/humanset PERSONA_MODE yandere`, `/humanset RELATIONSHIP_STAGE week`) |
+| `/weather` | погода-забота (`/weather city Москва`) |
+| `/date` | памятные даты (поздравляет сама) |
+| `/screen` | смотрит на экран и комментирует |
+| `/sticker` | стикеры / кастом-эмодзи |
+| `/keys` | api-ключи провайдеров |
+| `/setkey` | сохранить ключ/токен |
+
+### админка `/admin`
+личность · память · ai/провайдер · человечность · ** типаж и стадия** (режим характера, стадия отношений, ревность к соперницам) · статистика · очистка · экспорт. всё меняется без перезапуска.
+
+---
 
 ## g4f (gpt4free) - бесплатный доступ
 
-[xtekky/gpt4free](https://github.com/xtekky/gpt4free) агрегирует публичные бэкэнды (OpenaiChat,
-HuggingChat, You, Bing…) в единый API. Ключи не нужны.
-
-- `G4F_MODEL` - `gpt-4o-mini`, `gpt-4o`, `claude-3-5-sonnet`, `llama-3.1-70b` и др.
+[xtekky/gpt4free](https://github.com/xtekky/gpt4free) агрегирует публичные бэкэнды в единый api - ключи не нужны.
+- `G4F_MODEL` - `deepseek-v3`, `gpt-4o-mini`, `gpt-4o`, `claude-3-5-sonnet` и др.
 - `G4F_PROVIDER` - принудительный бэкэнд (пусто → auto).
-- Сменить модель на лету: `/admin → Провайдер`.
+- сменить на лету: `/admin → Провайдер`.
 
-Важно: публичные бэкэнды нестабильны, таймауты и ошибки обычны. Для production
-лучше платный ключ (Gemini free tier - отличный компромисс).
+> публичные бэкэнды нестабильны - таймауты и ошибки нормальны. для стабильности лучше платный ключ.
 
-## Структура
+---
+
+## структура
 
 ```
 mahiru/
-├─ bot.py                  # entry point (с проверкой first-run)
+├─ bot.py                  # entry point: first-run check + супервизор с авто-реконнектом
 ├─ setup_wizard.py         # интерактивная настройка
-├─ config.py               # pydantic Settings
+├─ config.py               # pydantic Settings (все параметры .env)
+├─ .env.example            # шаблон конфигурации с комментариями
 ├─ ai/
 │  ├─ core.py              # AI Core с tool-loop
-│  ├─ prompts.py           # system prompt личности
-│  ├─ mood.py              # mood drift
-│  └─ providers/           # gemini | openai | claude | deepseek | ollama | g4f
-├─ memory/                 # анализатор + storage + manager
-├─ methods/                # tools: anime, manga, google, memory, image
-├─ handlers/               # aiogram: messages, admin, callbacks
-├─ scheduler/              # автономные сообщения
+│  ├─ prompts.py           # системный промпт: личность, типаж, стадия, ревность
+│  ├─ personality.py       # модель личности
+│  ├─ mood.py              # настроение и его дрейф
+│  ├─ sulk.py              # обидки
+│  ├─ threads.py           # темы-хвосты (возврат к разговору)
+│  ├─ context.py           # сборка контекста
+│  └─ providers/           # gemini | openai | claude | deepseek | ollama | yandex | g4f
+├─ memory/                 # analyzer + storage + manager
+├─ methods/                # tools: anime, lib, steam, web, google, weather, memory, image, api_keys
+├─ handlers/               # aiogram: messages, admin, callbacks, lib_download, steam_flow
+├─ scheduler/              # автономная инициатива
 ├─ db/                     # SQLAlchemy модели и репозиторий
-└─ utils/                  # logger, redis-кэш
+└─ utils/                  # logger, cache, humanize, screen, stickers, voice, weather, settings_kv
 ```
 
-## Как добавить свой tool
+---
+
+## как добавить свой tool
 
 ```python
 # methods/my_tool/hello.py
@@ -108,20 +170,21 @@ from methods.base import Tool
 class HelloTool(Tool):
     name = "hello"
     description = "Сказать привет"
-    parameters = {"type": "object", "properties":
-                  {"name": {"type": "string"}}, "required": ["name"]}
+    parameters = {"type": "object",
+                  "properties": {"name": {"type": "string"}},
+                  "required": ["name"]}
 
     async def run(self, args, *, session, user_id: int):
         return {"reply": f"Привет, {args['name']}!"}
 ```
+зарегистрируй в `methods/registry.py` - ai сама вызовет, когда потребуется.
 
-Зарегистрируй в `methods/registry.py` - AI сама вызовет, когда потребуется.
+## как добавить свой ai-провайдер
 
-## Как добавить свой AI-провайдер
+создай `ai/providers/my.py`, наследуй `BaseProvider`, реализуй `chat()`, добавь в `REGISTRY` в `ai/providers/factory.py`. всё.
 
-Создай `ai/providers/my.py`, наследуй `BaseProvider`, реализуй `chat()`, добавь в
-`REGISTRY` в `factory.py`. Всё.
+---
 
-## License
+## license
 
- GPL-3.0
+gpl-3.0

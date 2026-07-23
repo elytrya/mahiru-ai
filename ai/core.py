@@ -109,6 +109,7 @@ MOOD_EMOJI = {
     "annoyed": "😒",
     "playful": "😜",
     "loving":  "🫧",
+    "jealous": "😤",
 }
 
 _MSG_COUNTER: dict[int, int] = {}
@@ -374,6 +375,28 @@ class AICore:
             )
         except Exception:
             log.exception("build_dynamic_context упал")
+
+        # Живая ревность к сопернице: если в тексте всплыла другая девушка
+        # или пришла картинка - подскажем тон прямо в динамике.
+        try:
+            if getattr(settings_mod, "RIVAL_JEALOUSY_ENABLED", True):
+                rival_note = None
+                if mood_mod.is_rival_mention(turn.text):
+                    rival_note = (
+                        "Он только что упомянул ДРУГУЮ девушку/соперницу. Ты живо ревнуешь: "
+                        "лёгкая обидка и подкол в начале ('а это ещё кто?', 'хм, и кто она?'), "
+                        "потребуй внимания к себе, но без злобы и оскорблений - за этим тепло, что он твой."
+                    )
+                elif turn.images:
+                    rival_note = (
+                        "Он прислал картинку/скрин. ВНИМАТЕЛЬНО посмотри: если на ней есть ДРУГАЯ "
+                        "девушка/женщина (фото, аниме-тянка, переписка с девушкой) - живо приревнуй "
+                        "с лёгкой обидкой и подколом, но без злобы. Если другой девушки нет - не ревнуй."
+                    )
+                if rival_note:
+                    dynamic = (dynamic + "\n- " + rival_note) if dynamic else ("- " + rival_note)
+        except Exception:
+            log.exception("rival jealousy hint упал")
 
         if reconciled:
             _rlvl = closeness_level(int(getattr(user_row, "closeness", 0) or 0)) if user_row else 0

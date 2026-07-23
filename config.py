@@ -118,6 +118,22 @@ class Settings(BaseSettings):
 
     JEALOUSY_ENABLED: bool = True
     JEALOUSY_HOURS: float = 12.0
+    # Ревность к ДРУГИМ девушкам: если замечает соперницу в переписке,
+    # на присланной картинке или у тебя на экране - ревнует по-живому.
+    RIVAL_JEALOUSY_ENABLED: bool = True
+    # Насколько сильно ревнует: 'soft' (лёгкая обидка/подколы) |
+    # 'normal' (заметно задевает, допытывается) | 'strong' (сильно, может надуться)
+    RIVAL_JEALOUSY_LEVEL: str = "normal"
+
+    # ==== Характер: типаж/режим и стадия отношений ====
+    # Типаж характера (базовый тон личности):
+    # loving (влюблённая) | deredere (милашка) | tsundere (цундере) |
+    # yandere (яндере, отыгрыш) | kuudere (куудере) | distant (отстранённая) | playful (игривая)
+    PERSONA_MODE: str = "loving"
+    # Стадия отношений (влияет на близость тона):
+    # just_met (только познакомились) | week (неделя) | month (месяц) |
+    # half_year (полгода) | year (год) | long (давно вместе)
+    RELATIONSHIP_STAGE: str = "just_met"
     ENERGY_ENABLED: bool = True
     CLOSENESS_ENABLED: bool = True
     CLOSENESS_PER_MSG: int = 1

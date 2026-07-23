@@ -23,6 +23,7 @@ def admin_menu() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🔐 API ключи",   callback_data="adm:keys"),
          InlineKeyboardButton(text="📊 Статистика",   callback_data="adm:stats")],
         [InlineKeyboardButton(text="🎭 Человечность", callback_data="adm:human")],
+        [InlineKeyboardButton(text="💠 Типаж и стадия", callback_data="adm:persona")],
         [InlineKeyboardButton(text="🧹 Очистка",     callback_data="adm:clear"),
          InlineKeyboardButton(text="📦 Импорт/Экспорт",
                               callback_data="adm:io")],

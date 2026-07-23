@@ -335,7 +335,7 @@ def step_human(data: dict) -> None:
     if hum:
         data["TYPING_SPEED_CPS"] = ask_number("Скорость набора (симв/сек, меньше = дольше печатает)", "14", "float")
         p("")
-        p("3) Разбивать длинный ответ на нескольк���� сообщений (как живой ч��ловек).")
+        p("3) Разбивать длинный ответ на нескольк������ сообщений (как живой ч��ловек).")
         data["SPLIT_MESSAGES"] = "true" if ask_bool("Разбивать на сообщения?", True) else "false"
         p("")
         p("4) Иногда 'занята' и отвечает заметно позже (шанс 0..1, напр. 0.12 = 12%).")
@@ -380,6 +380,49 @@ def step_human(data: dict) -> None:
     if dts:
         p("")
         p("   В свой день она сама поздравит, когда захочет — без фиксированного часа.")
+
+# Самодостаточные списки (не импортируем ai.prompts — зависимости могут быть ещё не установлены)
+PERSONA_MODE_OPTIONS = [
+    ("loving",   "💗 Влюблённая — тёплая, ласковая, открыто любит (базовый)"),
+    ("deredere", "🍬 Милашка — сплошная нежность и обожание"),
+    ("tsundere", "😤 Цундере — колючая снаружи, влюблённая внутри"),
+    ("yandere",  "🔪 Яндере — одержимо-ревнивая, сладко-жутковатая (отыгрыш)"),
+    ("kuudere",  "❄️ Куудере — спокойная, сдержанная, тепло глубоко внутри"),
+    ("distant",  "🌫 Отстранённая — холодновата, держит дистанцию"),
+    ("playful",  "😼 Игривая — дразнит, флиртует, шутит"),
+]
+
+REL_STAGE_OPTIONS = [
+    ("just_met",  "Только познакомились — стеснительно, без сильной ласки"),
+    ("week",      "Около недели — теплее, лёгкий флирт"),
+    ("month",     "Около месяца — близкий тёплый тон"),
+    ("half_year", "Полгода — настоящая близкая пара"),
+    ("year",      "Год — глубокая привязанность"),
+    ("long",      "Давно вместе — спокойная глубокая любовь"),
+]
+
+RIVAL_LEVEL_OPTIONS = [
+    ("soft",   "мягкая — лёгкая обидка и подколы"),
+    ("normal", "средняя — заметно задевает, допытывается"),
+    ("strong", "сильная — сильно ревнует, может надуться"),
+]
+
+def step_persona(data: dict) -> None:
+    hr()
+    p("Типаж характера и стадия отношений 🎭")
+    p("(всё это потом меняется в /admin -> Типаж и стадия)")
+    p("")
+    p("1) Какой будет её базовый характер (типаж)?")
+    data["PERSONA_MODE"] = ask_choice("Типаж:", PERSONA_MODE_OPTIONS, default="loving")
+    p("")
+    p("2) Как долго вы 'вместе'? Влияет на близость тона.")
+    data["RELATIONSHIP_STAGE"] = ask_choice("Стадия отношений:", REL_STAGE_OPTIONS, default="just_met")
+    p("")
+    p("3) Ревность к другим девушкам: реагирует, если увидит соперницу (в тексте, на картинке, на экране).")
+    rj = ask_bool("Включить ревность к соперницам?", True)
+    data["RIVAL_JEALOUSY_ENABLED"] = "true" if rj else "false"
+    if rj:
+        data["RIVAL_JEALOUSY_LEVEL"] = ask_choice("Сила ревности:", RIVAL_LEVEL_OPTIONS, default="normal")
 
 def step_autonomous(data: dict) -> None:
     hr()
@@ -474,9 +517,18 @@ def save_env(data) -> None:
         f"WEATHER_UNITS={g('WEATHER_UNITS', 'metric')}",
         f"WEATHER_LANG={g('WEATHER_LANG', 'ru')}",
         "",
+        "# ==== Характер: типаж и стадия отношений ====",
+        "# PERSONA_MODE: loving|deredere|tsundere|yandere|kuudere|distant|playful",
+        f"PERSONA_MODE={g('PERSONA_MODE', 'loving')}",
+        "# RELATIONSHIP_STAGE: just_met|week|month|half_year|year|long",
+        f"RELATIONSHIP_STAGE={g('RELATIONSHIP_STAGE', 'just_met')}",
+        "",
         "# ==== Характер: ревность / энергия / близость / пет-неймы ====",
         f"JEALOUSY_ENABLED={g('JEALOUSY_ENABLED', 'true')}",
         f"JEALOUSY_HOURS={g('JEALOUSY_HOURS', '12')}",
+        "# Ревность к другим девушкам (соперницам): soft|normal|strong",
+        f"RIVAL_JEALOUSY_ENABLED={g('RIVAL_JEALOUSY_ENABLED', 'true')}",
+        f"RIVAL_JEALOUSY_LEVEL={g('RIVAL_JEALOUSY_LEVEL', 'normal')}",
         f"ENERGY_ENABLED={g('ENERGY_ENABLED', 'true')}",
         f"CLOSENESS_ENABLED={g('CLOSENESS_ENABLED', 'true')}",
         f"CLOSENESS_PER_MSG={g('CLOSENESS_PER_MSG', '1')}",
@@ -573,6 +625,7 @@ def main() -> None:
     step_google(data)
     step_ui(data)
     step_human(data)
+    step_persona(data)
     step_autonomous(data)
     step_screen(data)
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 import asyncio
 import sys
+import time as _time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -82,6 +83,44 @@ async def _setup_bot_commands(bot: "Bot") -> None:
     except Exception:
         log.exception("set_my_commands failed")
 
+
+class _HealSession(AiohttpSession):
+    """AiohttpSession, который помнит время последнего успешного запроса
+    и НЕ переиспользует «мёртвые» keep-alive соединения. Это лечит
+    зависания на Windows («Превышен таймаут семафора»), когда aiogram
+    бесконечно ретрайт на уже отвалившемся сокете."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.last_success = _time.monotonic()
+        try:
+            self._connector_init.update({
+                "force_close": True,           # не переиспользовать старые сокеты
+                "enable_cleanup_closed": True,  # дочищать повисшие TLS-соединения
+                "ttl_dns_cache": 300,          # не кэшировать плохой DNS навсегда
+            })
+        except Exception:
+            pass
+
+    async def make_request(self, bot, method, timeout=None):
+        result = await super().make_request(bot, method, timeout=timeout)
+        self.last_success = _time.monotonic()
+        return result
+
+
+def _build_session() -> "_HealSession":
+    if settings.TELEGRAM_PROXY:
+        session = _HealSession(proxy=settings.TELEGRAM_PROXY)
+        log.info(f"🌐 Telegram через прокси: {settings.TELEGRAM_PROXY}")
+    else:
+        session = _HealSession()
+    try:
+        session.timeout = settings.TELEGRAM_TIMEOUT
+    except Exception:
+        pass
+    return session
+
+
 async def main() -> None:
     setup_logger(settings.LOG_LEVEL)
     log.info("Mahiru запускается…")
@@ -123,21 +162,6 @@ async def main() -> None:
     except Exception:
         pass
 
-    if settings.TELEGRAM_PROXY:
-        session = AiohttpSession(proxy=settings.TELEGRAM_PROXY)
-        log.info(f"🌐 Telegram через прокси: {settings.TELEGRAM_PROXY}")
-    else:
-        session = AiohttpSession()
-    try:
-        session.timeout = settings.TELEGRAM_TIMEOUT
-    except Exception:
-        pass
-
-    bot = Bot(
-        token=settings.BOT_TOKEN,
-        session=session,
-        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-    )
     dp = Dispatcher()
 
     dp.include_router(admin.router)
@@ -167,18 +191,80 @@ async def main() -> None:
                 log.exception("авто-поднятие Ollama не удалось (попробую при первом сообщении)")
         asyncio.create_task(_prewarm_ollama())
 
-    scheduler = AutonomousScheduler(bot)
-    if settings.AUTONOMOUS_ENABLED:
-        scheduler.start()
+    # ── Супервизор: авто-восстановление при зависании сети ───────────────
+    # При обрыве связи с Telegram (частый «Превышен таймаут семафора» на
+    # Windows / при блокировках) aiogram уходит в бесконечные ретраи на мёртвом
+    # соединении и НЕ оживает сам — раньше помогал только ручной рестарт.
+    # Теперь watchdog сам видит, что апдейты давно не приходят, и пересоздаёт
+    # сессию с нуля (эквивалент ручного перезапуска, но автоматически).
+    heal = {"active": False}
+    STALL_SECONDS = 120.0
 
-    try:
-        me = await bot.get_me()
-        log.info(f"Подключена как @{me.username}")
-        await _setup_bot_commands(bot)
-        await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
-    finally:
-        scheduler.shutdown()
-        await bot.session.close()
+    async def _watchdog(sess: "_HealSession", task: "asyncio.Task") -> None:
+        while not task.done():
+            await asyncio.sleep(15)
+            idle = _time.monotonic() - sess.last_success
+            if idle > STALL_SECONDS:
+                log.warning(
+                    f"⚠️ Telegram молчит уже {int(idle)}с — пересоздаю подключение "
+                    "(авто-восстановление, рестарт не нужен)"
+                )
+                heal["active"] = True
+                task.cancel()
+                return
+
+    first = True
+    while True:
+        heal["active"] = False
+        session = _build_session()
+        bot = Bot(
+            token=settings.BOT_TOKEN,
+            session=session,
+            default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+        )
+        scheduler = AutonomousScheduler(bot)
+        if settings.AUTONOMOUS_ENABLED:
+            scheduler.start()
+
+        poll_task = None
+        watchdog_task = None
+        try:
+            me = await bot.get_me()
+            log.info(f"Подключена как @{me.username}"
+                     + ("" if first else " (переподключение ✅)"))
+            first = False
+            await _setup_bot_commands(bot)
+            poll_task = asyncio.create_task(
+                dp.start_polling(
+                    bot,
+                    polling_timeout=30,
+                    handle_signals=False,
+                    allowed_updates=dp.resolve_used_update_types(),
+                )
+            )
+            watchdog_task = asyncio.create_task(_watchdog(session, poll_task))
+            await poll_task
+        except asyncio.CancelledError:
+            if not heal["active"]:
+                raise  # настоящий shutdown (Ctrl+C) — выходим
+            log.info("🔄 переподключаюсь к Telegram…")
+        except (TelegramNetworkError, OSError, ConnectionError) as e:
+            log.warning(f"сеть Telegram отвалилась ({e}); переподключение через 5с")
+        except Exception:
+            log.exception("polling упал; переподключение через 5с")
+        finally:
+            if watchdog_task:
+                watchdog_task.cancel()
+            try:
+                scheduler.shutdown()
+            except Exception:
+                pass
+            try:
+                await bot.session.close()
+            except Exception:
+                pass
+
+        await asyncio.sleep(5)
 
 if __name__ == "__main__":
     try:

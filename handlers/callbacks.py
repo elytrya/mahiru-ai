@@ -185,6 +185,10 @@ async def admin_cb(cb: CallbackQuery):
             text, kb = render_human_panel()
             await cb.message.edit_text(text, reply_markup=kb)
 
+        elif action == "persona":
+            text, kb = render_persona_panel()
+            await cb.message.edit_text(text, reply_markup=kb)
+
         elif action == "clear":
             kb = [
                 [InlineKeyboardButton(text="🗑 Подтвердить", callback_data="clear:yes")],
@@ -219,7 +223,7 @@ HUMAN_BOOL_FIELDS = [
     ("MOOD_SPEED_ENABLED",  "Настроение влияет на скорость"),
     ("READ_SILENCE_ENABLED","«Прочитала, молчит»"),
     ("STICKERS_ENABLED",    "Стикеры/кастом-эмодзи"),
-    ("DATES_ENABLED",       "Памятные даты (поздравляет)"),
+    ("DATES_ENABLED",       "Памятны�� даты (поздравляет)"),
     ("JEALOUSY_ENABLED",    "Ревность/обидки (если долго молчал)"),
     ("ENERGY_ENABLED",      "Энергия/батарейка (к ночи устаёт)"),
     ("CLOSENESS_ENABLED",   "Уровень близости"),
@@ -258,6 +262,105 @@ def render_human_panel() -> tuple[str, InlineKeyboardMarkup]:
     ])
     rows.append([InlineKeyboardButton(text="« Назад", callback_data="adm:home")])
     return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# ====================== ТИПАЖ / СТАДИЯ ОТНОШЕНИЙ ======================
+_RIVAL_LEVELS = ["soft", "normal", "strong"]
+_RIVAL_LEVEL_LABELS = {"soft": "мягкая", "normal": "средняя", "strong": "сильная"}
+
+
+def render_persona_panel() -> tuple[str, InlineKeyboardMarkup]:
+    from ai.prompts import (
+        PERSONA_MODE_ORDER, PERSONA_MODE_LABELS,
+        RELATIONSHIP_STAGE_ORDER, RELATIONSHIP_STAGE_LABELS,
+    )
+    cur_mode = (getattr(settings, "PERSONA_MODE", "loving") or "loving").lower()
+    cur_stage = (getattr(settings, "RELATIONSHIP_STAGE", "just_met") or "just_met").lower()
+    mode_label = PERSONA_MODE_LABELS.get(cur_mode, cur_mode)
+    stage_label = RELATIONSHIP_STAGE_LABELS.get(cur_stage, cur_stage)
+    rival_on = bool(getattr(settings, "RIVAL_JEALOUSY_ENABLED", True))
+    rlevel = (getattr(settings, "RIVAL_JEALOUSY_LEVEL", "normal") or "normal").lower()
+    rlevel_label = _RIVAL_LEVEL_LABELS.get(rlevel, rlevel)
+    text = (
+        "<b>💠 Типаж характера и стадия отношений</b>\n\n"
+        f"Режим характера: <b>{mode_label}</b>\n"
+        f"Стадия отношений: <b>{stage_label}</b>\n"
+        f"Ревность к соперницам: {'✅' if rival_on else '❌'} (сила: <b>{rlevel_label}</b>)\n\n"
+        "Выбери типаж характера:"
+    )
+    rows: list[list[InlineKeyboardButton]] = []
+    for m in PERSONA_MODE_ORDER:
+        mark = "🔘 " if m == cur_mode else ""
+        rows.append([InlineKeyboardButton(
+            text=f"{mark}{PERSONA_MODE_LABELS.get(m, m)}",
+            callback_data=f"pm:{m}")])
+    rows.append([InlineKeyboardButton(text="— Стадия отношений —", callback_data="adm:persona")])
+    stage_row: list[InlineKeyboardButton] = []
+    for stg in RELATIONSHIP_STAGE_ORDER:
+        mark = "🔘 " if stg == cur_stage else ""
+        stage_row.append(InlineKeyboardButton(
+            text=f"{mark}{RELATIONSHIP_STAGE_LABELS.get(stg, stg)}",
+            callback_data=f"rs:{stg}"))
+        if len(stage_row) == 2:
+            rows.append(stage_row)
+            stage_row = []
+    if stage_row:
+        rows.append(stage_row)
+    rows.append([
+        InlineKeyboardButton(text=f"{'✅' if rival_on else '❌'} Ревность к соперницам",
+                             callback_data="rj:toggle"),
+        InlineKeyboardButton(text=f"⚔️ Сила: {rlevel_label}",
+                             callback_data="rj:level"),
+    ])
+    rows.append([InlineKeyboardButton(text="« Назад", callback_data="adm:home")])
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+async def _rerender_persona(cb: CallbackQuery) -> None:
+    text, kb = render_persona_panel()
+    try:
+        await cb.message.edit_text(text, reply_markup=kb)
+    except Exception:
+        pass
+
+
+@router.callback_query(F.data.startswith("pm:"))
+async def set_persona_mode(cb: CallbackQuery):
+    if not _is_admin(cb.from_user.id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    mode = cb.data.split(":", 1)[1]
+    await set_behavior("PERSONA_MODE", mode)
+    await _rerender_persona(cb)
+    await cb.answer("Сохранено ✅")
+
+
+@router.callback_query(F.data.startswith("rs:"))
+async def set_rel_stage(cb: CallbackQuery):
+    if not _is_admin(cb.from_user.id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    stage = cb.data.split(":", 1)[1]
+    await set_behavior("RELATIONSHIP_STAGE", stage)
+    await _rerender_persona(cb)
+    await cb.answer("Сохранено ✅")
+
+
+@router.callback_query(F.data.startswith("rj:"))
+async def rival_jealousy_cb(cb: CallbackQuery):
+    if not _is_admin(cb.from_user.id):
+        await cb.answer("Нет доступа", show_alert=True)
+        return
+    op = cb.data.split(":", 1)[1]
+    if op == "toggle":
+        cur = bool(getattr(settings, "RIVAL_JEALOUSY_ENABLED", True))
+        await set_behavior("RIVAL_JEALOUSY_ENABLED", not cur)
+    elif op == "level":
+        cur = (getattr(settings, "RIVAL_JEALOUSY_LEVEL", "normal") or "normal").lower()
+        idx = _RIVAL_LEVELS.index(cur) if cur in _RIVAL_LEVELS else 1
+        await set_behavior("RIVAL_JEALOUSY_LEVEL", _RIVAL_LEVELS[(idx + 1) % len(_RIVAL_LEVELS)])
+    await _rerender_persona(cb)
+    await cb.answer("Сохранено ✅")
 
 
 def _next_preset(presets: list[float], cur: float) -> float:

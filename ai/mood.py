@@ -8,15 +8,40 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from db import repo
 from config import settings
 
-MOODS = ["happy", "sad", "tired", "excited", "curious", "annoyed", "playful", "loving"]
+MOODS = ["happy", "sad", "tired", "excited", "curious", "annoyed", "playful", "loving", "jealous"]
 
 _DRIFT_WEIGHTS = {
     "happy": 1.4, "curious": 1.3, "playful": 1.2, "loving": 1.0,
     "excited": 1.0, "tired": 0.9, "sad": 0.6, "annoyed": 0.6,
+    # ревность не возникает сама по себе (вес 0) - только как реакция на соперницу
+    "jealous": 0.0,
 }
 
-_NEGATIVE = {"sad", "annoyed", "tired"}
+# jealous тоже со временем оттаивает (как негативное настроение)
+_NEGATIVE = {"sad", "annoyed", "tired", "jealous"}
 _WARM = {"loving", "happy", "excited", "playful"}
+
+# Упоминание ДРУГОЙ девушки/соперницы в тексте (не про саму Махиру).
+# Нарочно НЕ ловим 'моя девушка' / 'ты моя' - это про неё саму.
+_RIVAL_RE = re.compile(
+    r"(друг(ая|ую|ой)\s+(деву?шк|девч|девочк|тянк|тян)|"
+    r"познакомил(ся|ась)\b|"
+    r"\bтёлк|\bтелк|\bтёлочк|\bтелочк|"
+    r"\bкрасотк|\bкрасавиц|"
+    r"красив(ая|ую)\s+деву?шк|симпатичн(ая|ую)\s+(деву?шк|девочк)|"
+    r"\bбывш(ая|ую|ей|ей)\b|\bэкс\b|экс[- ]?(подру|девуш|герл)|"
+    r"деву?шк[аеиу]?\s+на\s+(фото|картинк|экран|скрин)|"
+    r"\bодноклассниц|\bоднокурсниц|"
+    r"перепис\w+\s+с\s+(деву?шк|девч|одной|другой)|"
+    r"свидани\w*\s+с\b|"
+    r"\bподру[жг]к)",
+    re.I,
+)
+
+
+def is_rival_mention(text: str | None) -> bool:
+    """В тексте упомянута другая девушка/соперница (повод ревновать)."""
+    return bool(text and _RIVAL_RE.search(text))
 
 def _hours_since(ts) -> float:
     if not ts:
@@ -33,6 +58,8 @@ _TRIGGERS: list[tuple[re.Pattern, str, float]] = [
     (re.compile(r"\b(груст|плохо|устал|тяжело|одинок|депрес|херово|паршиво|больно|умер)", re.I), "sad", 0.5),
     (re.compile(r"(заеб|беси|заткн|туп(ая|ой)|дура\b|дебил|идиот|отвали|надоел|заебал|иди на|пош(ла|ёл|ел) на|нахуй|нахер|нах\b|шалав|шлюх|тварь|уеб|урод|сука|мраз|гнид|вали отсюда|пшла|молчи)", re.I), "annoyed", 0.92),
     (re.compile(r"\b(почему|как так|а что|расскаж|интересно|а как|что такое)", re.I), "curious", 0.4),
+    # Соперница в переписке -> ревность (надёжно, но не сильнее прямого оскорбления)
+    (_RIVAL_RE, "jealous", 0.88),
 ]
 
 async def maybe_drift(session: AsyncSession, user_id: int,
@@ -67,6 +94,9 @@ async def react_to_message(session: AsyncSession, user_id: int, text: str,
         return current.mood, False
 
     mood, strength = best
+    # Ревность к соперницам можно выключить настройкой
+    if mood == "jealous" and not getattr(settings, "RIVAL_JEALOUSY_ENABLED", True):
+        return current.mood, False
     forced = strength >= 0.85
     if mood == current.mood:
         if mood in _NEGATIVE:
